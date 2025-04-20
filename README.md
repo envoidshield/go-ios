@@ -5,6 +5,7 @@
 [![NPM](https://img.shields.io/npm/dw/go-ios?style=flat-square)](https://npmjs.org/package/go-ios)
 
 <img src="logo.png" width="256"/>
+
 # go-ios (with Envoid Box Integration)
 
 This is a fork of the [go-ios](https://github.com/danielpaulus/go-ios) project, providing tools for interacting with iOS devices over USB.  This fork adds enhanced integration with the Envoid Box, a security device that allows secure connection and data transfer from iOS devices.  Specifically, this fork enables secure trust establishment *through* the Envoid Box, enhancing security and control over data access.
