@@ -90,30 +90,40 @@ func (r RsdPortProviderJson) GetServices() (services map[string]RsdServiceEntry)
 // checkin itself, and the second message contains a 'StartService' request, which does not need any action
 // from the host side
 func RsdCheckin(rw io.ReadWriter) error {
-	req := map[string]interface{}{
-		"Label":           "go-ios",
-		"ProtocolVersion": "2",
-		"Request":         "RSDCheckin",
-	}
+    req := map[string]interface{}{
+        "Label":           "EnVoid",
+        "ProtocolVersion": "2",
+        "Request":         "RSDCheckin",
+    }
 
-	prw := NewPlistCodecReadWriter(rw, rw)
+    fmt.Printf("RsdCheckin: Sending checkin request: %+v\n", req)
 
-	err := prw.Write(req)
-	if err != nil {
-		return fmt.Errorf("RsdCheckin: failed to send checkin request: %w", err)
-	}
+    prw := NewPlistCodecReadWriter(rw, rw)
+    err := prw.Write(req)
+    if err != nil {
+        fmt.Printf("RsdCheckin: Error writing checkin request: %v\n", err)
+        return fmt.Errorf("RsdCheckin: failed to send checkin request: %w", err)
+    }
 
-	var checkinResponse map[string]any
-	err = prw.Read(&checkinResponse)
-	if err != nil {
-		return fmt.Errorf("RsdCheckin: failed to read checkin response: %w", err)
-	}
-	var startService map[string]any
-	err = prw.Read(&startService)
-	if err != nil {
-		return fmt.Errorf("RsdCheckin: failed to read start service message: %w", err)
-	}
-	return nil
+    var checkinResponse map[string]any
+    fmt.Println("RsdCheckin: Reading checkin response...")
+    err = prw.Read(&checkinResponse)
+    if err != nil {
+        fmt.Printf("RsdCheckin: Error reading checkin response: %v\n", err)
+        return fmt.Errorf("RsdCheckin: failed to read checkin response: %w", err)
+    }
+    fmt.Printf("RsdCheckin: Checkin response received: %+v\n", checkinResponse)
+
+    var startService map[string]any
+    fmt.Println("RsdCheckin: Reading start service message...")
+    err = prw.Read(&startService)
+    if err != nil {
+        fmt.Printf("RsdCheckin: Error reading start service message: %v\n", err)
+        return fmt.Errorf("RsdCheckin: failed to read start service message: %w", err)
+    }
+    fmt.Printf("RsdCheckin: Start service message received: %+v\n", startService)
+
+    return nil
 }
 
 const port = 58783

@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"runtime"
 	"time"
+	"encoding/base64"
 
 	"github.com/danielpaulus/go-ios/ios"
 	"github.com/danielpaulus/go-ios/ios/http"
@@ -86,6 +87,56 @@ func ManualPairAndConnectToTunnel(ctx context.Context, device ios.DeviceEntry, p
 		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to connect to tunnel: %w", err)
 	}
 	return t, nil
+}
+
+func RemotePair(ctx context.Context, device ios.DeviceEntry, p PairRecordManager, addr string) (RemotePairResult, error) {
+	log.Info("Remote Pair: starting manual pairing and tunnel connection.")
+
+	//devConn, err := ios.ConnectToShimService(device, "com.apple.syslog_relay.shim.remote")
+	//if err != nil{
+	//	return RemotePairResult{}, fmt.Errorf("Remote Pair: failed to device connect: %w", err)
+	//}
+
+
+	port := device.Rsd.GetPort("com.apple.internal.dt.coredevice.untrusted.tunnelservice")
+
+	conn, err := ios.ConnectTUNDevice(addr, port, device)
+
+	if err != nil {
+		return RemotePairResult{}, fmt.Errorf("Remote Pair: failed to connect to TUN device: %w", err)
+	}
+
+	h, err := http.NewHttpConnection(conn)
+	if err != nil {
+		return RemotePairResult{}, fmt.Errorf("Remote Pair: failed to create HTTP2 connection: %w", err)
+	}
+	
+	xpcConn, err := ios.CreateXpcConnection(h)
+	if err != nil {
+		return RemotePairResult{}, fmt.Errorf("Remote Pair: failed to create RemoteXPC connection: %w", err)
+	}
+
+	ts := newTunnelServiceWithXpc(xpcConn, h, p)
+
+	publicKeyB64 := base64.StdEncoding.EncodeToString(ts.pairRecords.selfId.PublicKey)
+	privateKeyB64 := base64.StdEncoding.EncodeToString(ts.pairRecords.selfId.PrivateKey)
+
+	fmt.Printf("[DEBUG] PublicKey (base64): %s\n", publicKeyB64)
+	fmt.Printf("[DEBUG] PrivateKey (base64): %s\n", privateKeyB64)
+
+	hostKey, err := ts.ManualPairGetHostKey()
+	if err != nil {
+		return RemotePairResult{}, fmt.Errorf("Remote Pair: failed to pair device: %w", err)
+	}
+	//hostKeyB64 := base64.StdEncoding.EncodeToString(hostKey)
+
+	result := RemotePairResult{
+		PublicKey:           publicKeyB64,
+		PrivateKey:          privateKeyB64,
+		RemoteUnlockHostKey: hostKey,
+	}
+
+	return result, nil
 }
 
 func getUntrustedTunnelServicePort(addr string, device ios.DeviceEntry) (int, error) {
@@ -167,6 +218,13 @@ func connectToTunnel(ctx context.Context, info tunnelListener, addr string, devi
 		utunErr := utunIface.Close()
 		return errors.Join(quicErr, utunErr)
 	}
+
+  fmt.Printf("Returning Tunnel: %+v\n", Tunnel{
+      Address: tunnelInfo.ServerAddress,
+      RsdPort: int(tunnelInfo.ServerRSDPort),
+      Udid:    device.Properties.SerialNumber,
+      closer:  closeFunc,
+  })
 
 	return Tunnel{
 		Address: tunnelInfo.ServerAddress,
@@ -301,43 +359,55 @@ func forwardDataToInterface(ctx context.Context, conn quic.Connection, w io.Writ
 }
 
 func exchangeCoreTunnelParameters(stream io.ReadWriteCloser) (tunnelParameters, error) {
-	rq, err := json.Marshal(map[string]interface{}{
-		"type": "clientHandshakeRequest",
-		"mtu":  1280,
-	})
-	if err != nil {
-		return tunnelParameters{}, err
-	}
+    // Request
+    rq, err := json.Marshal(map[string]interface{}{
+        "type": "clientHandshakeRequest",
+        "mtu":  16000, //maximum transmission unit
+    })
+    if err != nil {
+        return tunnelParameters{}, fmt.Errorf("error marshaling request: %w", err)
+    }
 
-	buf := bytes.NewBuffer(nil)
-	// Write on bytes.Buffer never returns an error
-	_, _ = buf.Write([]byte("CDTunnel\000"))
-	_ = buf.WriteByte(byte(len(rq)))
-	_, _ = buf.Write(rq)
+    fmt.Printf("Request: %s\n", string(rq)) // Log the request
 
-	_, err = stream.Write(buf.Bytes())
-	if err != nil {
-		return tunnelParameters{}, err
-	}
+    buf := bytes.NewBuffer(nil)
+    // Write on bytes.Buffer never returns an error
+    _, _ = buf.Write([]byte("CDTunnel\000"))
+    _ = buf.WriteByte(byte(len(rq)))
+    _, _ = buf.Write(rq)
 
-	header := make([]byte, len("CDTunnel")+2)
-	n, err := stream.Read(header)
-	if err != nil {
-		return tunnelParameters{}, fmt.Errorf("could not header read from stream. %w", err)
-	}
+    fmt.Printf("Sending to stream: %x\n", buf.Bytes()) // Log the data being sent
 
-	bodyLen := header[len(header)-1]
+    _, err = stream.Write(buf.Bytes())
+    if err != nil {
+        return tunnelParameters{}, fmt.Errorf("error writing to stream: %w", err)
+    }
 
-	res := make([]byte, bodyLen)
-	n, err = stream.Read(res)
-	if err != nil {
-		return tunnelParameters{}, fmt.Errorf("could not read from stream. %w", err)
-	}
+    header := make([]byte, len("CDTunnel")+2)
+    n, err := stream.Read(header)
+    if err != nil {
+        return tunnelParameters{}, fmt.Errorf("could not header read from stream. %w", err)
+    }
 
-	var parameters tunnelParameters
-	err = json.Unmarshal(res[:n], &parameters)
-	if err != nil {
-		return tunnelParameters{}, err
-	}
-	return parameters, nil
+    fmt.Printf("Received header: %x\n", header) // Log the header received
+
+    bodyLen := header[len(header)-1]
+
+    res := make([]byte, bodyLen)
+    n, err = stream.Read(res)
+    if err != nil {
+        return tunnelParameters{}, fmt.Errorf("could not read from stream. %w", err)
+    }
+
+    fmt.Printf("Received response: %s\n", string(res)) // Log the response received
+
+    var parameters tunnelParameters
+    err = json.Unmarshal(res[:n], &parameters)
+    if err != nil {
+        return tunnelParameters{}, fmt.Errorf("error unmarshaling response: %w", err)
+    }
+
+    fmt.Printf("Parsed parameters: %+v\n", parameters) // Log the parsed parameters
+
+    return parameters, nil
 }

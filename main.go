@@ -123,6 +123,7 @@ Usage:
   ios resetax [options]
   ios resetlocation [options]
   ios rsd ls [options]
+  ios rsd manpair
   ios runtest [--bundle-id=<bundleid>] [--test-runner-bundle-id=<testrunnerbundleid>] [--xctest-config=<xctestconfig>] [--log-output=<file>] [--xctest] [--test-to-run=<tests>]... [--test-to-skip=<tests>]... [--env=<e>]... [options]
   ios runwda [--bundleid=<bundleid>] [--testrunnerbundleid=<testbundleid>] [--xctestconfig=<xctestconfig>] [--log-output=<file>] [--arg=<a>]... [--env=<e>]... [options]
   ios runxctest [--xctestrun-file-path=<xctestrunFilePath>] [--log-output=<file>] [options]
@@ -258,7 +259,7 @@ The commands work as following:
    ios timeformat (24h | 12h | toggle | get) [--force] [options] Sets, or returns the state of the "time format". iOS 11+ only (Use --force to try on older versions).
    ios tunnel ls                                                      List currently started tunnels. Use --enabletun to activate using TUN devices rather than user space network. Requires sudo/admin shells. 
    ios tunnel start [options] [--pair-record-path=<pairrecordpath>] [--enabletun]   Creates a tunnel connection to the device. If the device was not paired with the host yet, device pairing will also be executed.
-   >           														  On systems with System Integrity Protection enabled the argument '--pair-record-path=default' can be used to point to /var/db/lockdown/RemotePairing/user_501.
+   >           														  On stunnel startystems with System Integrity Protection enabled the argument '--pair-record-path=default' can be used to point to /var/db/lockdown/RemotePairing/user_501.
    >                                                                  If nothing is specified, the current dir is used for the pair record.
    >                                                                  This command needs to be executed with admin privileges.
    >                                                                  (On MacOS the process 'remoted' must be paused before starting a tunnel is possible 'sudo pkill -SIGSTOP remoted', and 'sudo pkill -SIGCONT remoted' to resume)
@@ -400,6 +401,7 @@ The commands work as following:
 	rsdCommand, _ := arguments.Bool("rsd")
 	if rsdCommand {
 		listCommand, _ := arguments.Bool("ls")
+		pairCommand, _ := arguments.Bool("manpair")
 		if listCommand {
 			services := device.Rsd.GetServices()
 			if JSONdisabled {
@@ -410,6 +412,51 @@ The commands work as following:
 				println(string(b))
 			}
 			return
+		}else if pairCommand {
+			tunnels, err := tunnel.ListRunningTunnels(tunnelInfoHost, tunnelInfoPort)
+			if err != nil {
+				exitIfError("failed to get tunnel infos", err)
+			}
+
+			if len(tunnels) == 0 {
+				fmt.Println("no running tunnels found tunnel list is empty")
+				return
+			}
+
+			first := tunnels[0]
+			addr := first.Address
+			udid := first.Udid
+
+			fmt.Printf("Address: %s\n", addr)
+			fmt.Printf("UDID: %s\n", udid)
+			if err != nil {
+				exitIfError("failed to get device", err)
+			}
+			
+			if err != nil {
+				exitIfError("cant find port", err)
+			}
+			device, err := ios.GetDevice(udid)
+			info, err := tunnel.TunnelInfoForDevice(device.Properties.SerialNumber, tunnelInfoHost, tunnelInfoPort)
+			device.UserspaceTUNPort = info.UserspaceTUNPort
+			device.UserspaceTUNHost = userspaceTunnelHost
+			device.UserspaceTUN = info.UserspaceTUN
+			device = deviceWithRsdProvider(device, udid, info.Address, info.RsdPort)
+			entryOne := device
+
+			pairRecordsPath := "."
+			pm, err := tunnel.NewPairRecordManager(pairRecordsPath)
+			if err != nil {
+				exitIfError("could not creat pair record manager", err)
+			}	
+			
+		    res, err := tunnel.RemotePair(context.TODO(), entryOne , pm, addr)
+			if err != nil {
+				log.Fatal(err)
+			}
+			fmt.Println("Public Key:", res.PublicKey)
+			fmt.Println("Private Key:", res.PrivateKey)
+			fmt.Println("Remote Unlock Host Key:", res.RemoteUnlockHostKey)
 		}
 	}
 

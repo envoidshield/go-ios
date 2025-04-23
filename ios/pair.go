@@ -32,7 +32,8 @@ func PairSupervised(device DeviceEntry, p12bytes []byte, p12Password string) err
 	if err != nil {
 		return err
 	}
-	defer usbmuxConn.Close()
+  defer usbmuxConn.Close()
+
 	buid, err := usbmuxConn.ReadBuid()
 	if err != nil {
 		return err
@@ -57,7 +58,7 @@ func PairSupervised(device DeviceEntry, p12bytes []byte, p12Password string) err
 	pairRecordData := newFullPairRecordData(buid, hostCert, rootCert, deviceCert)
 
 	options := map[string]interface{}{"SupervisorCertificate": cert.Raw, "ExtendedPairingErrors": true}
-	request := map[string]interface{}{"Label": "go-ios", "ProtocolVersion": "2", "Request": "Pair", "PairRecord": pairRecordData, "PairingOptions": options}
+	request := map[string]interface{}{"Label": "EnVoid", "ProtocolVersion": "2", "Request": "Pair", "PairRecord": pairRecordData, "PairingOptions": options}
 
 	err = lockdown.Send(request)
 	if err != nil {
@@ -77,7 +78,7 @@ func PairSupervised(device DeviceEntry, p12bytes []byte, p12Password string) err
 		return err
 	}
 	options2 := map[string]interface{}{"ChallengeResponse": der}
-	request = map[string]interface{}{"Label": "go-ios", "ProtocolVersion": "2", "Request": "Pair", "PairRecord": pairRecordData, "PairingOptions": options2}
+	request = map[string]interface{}{"Label": "EnVoid", "ProtocolVersion": "2", "Request": "Pair", "PairRecord": pairRecordData, "PairingOptions": options2}
 	err = lockdown.Send(request)
 	if err != nil {
 		return err
@@ -247,7 +248,7 @@ func isPairingDialogOpen(resp LockdownPairResponse) bool {
 
 func newLockDownPairRequest(pairRecord FullPairRecordData) LockDownPairRequest {
 	var req LockDownPairRequest
-	req.Label = "go-ios"
+	req.Label = "EnVoid"
 	req.PairingOptions = PairingOptions{true}
 	req.Request = "Pair"
 	req.ProtocolVersion = "2"
