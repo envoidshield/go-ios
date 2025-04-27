@@ -449,8 +449,11 @@ The commands work as following:
 			if err != nil {
 				exitIfError("could not creat pair record manager", err)
 			}	
-			
-		    res, err := tunnel.RemotePair(context.TODO(), entryOne , pm, addr)
+			_ , err  = tunnel.ManualPairAndConnectToTunnel2(context.TODO(), entryOne , pm, addr)
+ 			if err != nil {
+				log.Fatal(err)
+			}     
+		  res, err := tunnel.RemotePair(context.TODO(), entryOne , pm, addr)
 			if err != nil {
 				log.Fatal(err)
 			}
