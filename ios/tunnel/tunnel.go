@@ -44,6 +44,43 @@ type Tunnel struct {
 func (t Tunnel) Close() error {
 	return t.closer()
 }
+// ManualPairAndConnectToTunnel tries to verify an existing pairing, and if this fails it triggers a new manual pairing process.
+// After a successful pairing a tunnel for this device gets started and the tunnel information is returned
+func ManualPairAndConnectToTunnelNoContext( addr string, device ios.DeviceEntry, p PairRecordManager) (Tunnel, error) {
+	log.Info("ManualPairAndConnectToTunnel: starting manual pairing and tunnel connection, dont forget to stop remoted first with 'sudo pkill -SIGSTOP remoted' and run this with sudo.")
+  port := device.Rsd.GetPort("com.apple.internal.dt.coredevice.untrusted.tunnelservice")
+  log.Debug("Got untrusted tunnel service port: %d", port)
+  conn, err := ios.ConnectTUNDevice(addr, port, device)
+	if err != nil {
+		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to connect to TUN device: %w", err)
+	}
+	h, err := http.NewHttpConnection(conn)
+	if err != nil {
+		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to create HTTP2 connection: %w", err)
+	}
+
+	xpcConn, err := ios.CreateXpcConnection(h)
+	if err != nil {
+		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to create RemoteXPC connection: %w", err)
+	}
+	ts := newTunnelServiceWithXpc(xpcConn, h, p)
+
+	err = ts.ManualPair()
+	if err != nil {
+		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to pair device: %w", err)
+	}
+	tunnelInfo, err := ts.createTunnelListener()
+	if err != nil {
+		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to create tunnel listener: %w", err)
+	}
+  fmt.Printf("Tunnel Info: %+v\n", tunnelInfo)
+  // t := Tunnel{}
+	t, err := connectToTunnel(context.TODO(), tunnelInfo, addr, device)
+	if err != nil {
+		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to connect to tunnel: %w", err)
+	}
+	return t, nil
+}
 
 // ManualPairAndConnectToTunnel tries to verify an existing pairing, and if this fails it triggers a new manual pairing process.
 // After a successful pairing a tunnel for this device gets started and the tunnel information is returned

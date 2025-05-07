@@ -123,6 +123,7 @@ Usage:
   ios resetax [options]
   ios resetlocation [options]
   ios rsd ls [options]
+  ios rsd manpair [--a=<addr>] [--p=<port>] [options]
   ios runtest [--bundle-id=<bundleid>] [--test-runner-bundle-id=<testrunnerbundleid>] [--xctest-config=<xctestconfig>] [--log-output=<file>] [--xctest] [--test-to-run=<tests>]... [--test-to-skip=<tests>]... [--env=<e>]... [options]
   ios runwda [--bundleid=<bundleid>] [--testrunnerbundleid=<testbundleid>] [--xctestconfig=<xctestconfig>] [--log-output=<file>] [--arg=<a>]... [--env=<e>]... [options]
   ios runxctest [--xctestrun-file-path=<xctestrunFilePath>] [--log-output=<file>] [options]
@@ -399,6 +400,7 @@ The commands work as following:
 
 	rsdCommand, _ := arguments.Bool("rsd")
 	if rsdCommand {
+    pairCommend, _ := arguments.Bool("manpair")
 		listCommand, _ := arguments.Bool("ls")
 		if listCommand {
 			services := device.Rsd.GetServices()
@@ -410,8 +412,15 @@ The commands work as following:
 				println(string(b))
 			}
 			return
-		}
-	}
+		} else if pairCommend {
+        addr , _ := arguments.String("--a")
+        recordsPath := "."
+      	pm, err := tunnel.NewPairRecordManager(recordsPath)
+        exitIfError("could not creat pair record manager", err)
+        _, err = tunnel.ManualPairAndConnectToTunnelNoContext(addr, device, pm)
+        fmt.Printf("err: %+v\n", err) 
+  }
+}
 
 	if mobileGestaltCommand(device, arguments) {
 		return
