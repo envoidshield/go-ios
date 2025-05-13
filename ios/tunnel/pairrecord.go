@@ -60,6 +60,20 @@ func NewPairRecordManager(p string) (PairRecordManager, error) {
 	}, nil
 }
 
+func readDeviceIdentity(p string) (device, error) {
+	selfIdPath := path.Join(p, "selfIdentity.plist")
+	content, err := os.ReadFile(selfIdPath)
+	if err != nil {
+		return device{}, fmt.Errorf("readDeviceIdentity: could not read file: %w", err)
+	}
+	var d device
+	_, err = plist.Unmarshal(content, &d)
+	if err != nil {
+		return device{}, fmt.Errorf("readDeviceIdentity: could not parse plist content: %w", err)
+	}
+	return d, nil
+}
+
 // StoreDeviceInfo stores the provided Device info as a plist encoded file in the `peers/` directory
 func (p PairRecordManager) StoreDeviceInfo(d device) error {
 	devicePath := path.Join(p.peersLocation, fmt.Sprintf("%s.plist", d.Identifier))

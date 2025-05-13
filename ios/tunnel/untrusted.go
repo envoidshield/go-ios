@@ -48,6 +48,55 @@ func (t *tunnelService) Close() error {
 	return t.c.Close()
 }
 
+func (t *tunnelService) ManualPairGetHostKey() (string, error) {
+  log.Debug("Init connection phase")
+  err := t.controlChannel.writeRequest(map[string]interface{}{
+    "handshake": map[string]interface{}{
+      "_0": map[string]interface{}{
+        "hostOptions": map[string]interface{}{
+          "attemptPairVerify": true,
+        },
+        "wireProtocolVersion": int64(19),
+      },
+    },
+  })
+  if err != nil {
+    return "", fmt.Errorf("ManualPair: failed to send 'attemptPairVerify' request: %w", err)
+  }
+  // ignore the response for now
+  _, err = t.controlChannel.read()
+  if err != nil {
+    return "", fmt.Errorf("ManualPair: failed to read 'attemptPairVerify' response: %w", err)
+  }
+  err = t.verifyPair()
+  if err == nil {
+    return "", nil
+  }
+  log.WithError(err).Info("pair verify failed")
+  err = t.setupManualPairing()
+  if err != nil {
+    return "", fmt.Errorf("ManualPair: failed to initiate manual pairing: %w", err)
+  }
+  sessionKey, err := t.setupSessionKey()
+  if err != nil {
+    return "", fmt.Errorf("ManualPair: failed to setup SRP session key: %w", err)
+  }
+  err = t.exchangeDeviceInfo(sessionKey)
+  if err != nil {
+    return "", fmt.Errorf("ManualPair: failed to exchange device info: %w", err)
+  }
+  err = t.setupCiphers(sessionKey)
+  if err != nil {
+    return "", fmt.Errorf("ManualPair: failed to setup session ciphers: %w", err)
+  }
+  key, err := t.createUnlockKey()
+  if err != nil {
+    return "", fmt.Errorf("ManualPair: failed to create unlock key: %w", err)
+  }
+  fmt.Printf("Unlock Key: %s\n", key)
+  return key, nil
+}
+
 // ManualPair triggers a device pairing that requires the user to press the 'Trust' button on the device that appears
 // when this operation is triggered
 // If there is already an active pairing with the credentials stored in PairRecordManager this call does not trigger
