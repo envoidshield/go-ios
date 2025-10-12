@@ -290,3 +290,4 @@ func GetValues(device DeviceEntry) (GetAllValuesResponse, error) {
 	}
 	return allValues, nil
 }
+

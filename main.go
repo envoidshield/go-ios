@@ -359,6 +359,7 @@ func (c *CLI) pairWithDevice() {
 
 	recordsPath := "."
 	pm, err := tunnel.NewPairRecordManager(recordsPath)
+
 	if err != nil {
 		fmt.Printf("Error creating pair record manager: %v\n", err)
 		return
@@ -366,8 +367,20 @@ func (c *CLI) pairWithDevice() {
 	
 	device, err := ios.GetDevice(selectedTunnel.Udid)
 	if err != nil {
-		fmt.Printf("Error getting device: %v\n", err)
-		return
+		log.Fatalf("Error getting device with UDID %s: %v", selectedTunnel.Udid, err)
+	}
+
+	// First get a lockdown connection
+	lockdown, err := ios.ConnectLockdownWithSession(device)
+	if err != nil {
+		log.Fatalf("Error connecting to lockdown session: %v", err)
+	}
+	defer lockdown.Close()
+
+	// Then set the value
+	err = lockdown.SetValueForDomain("EnableWifiConnections", "com.apple.mobile.wireless_lockdown", true)
+	if err != nil {
+		log.Fatalf("Error setting value for domain: %v", err)
 	}
 
 	info, err := tunnel.TunnelInfoForDevice(device.Properties.SerialNumber, ios.HttpApiHost(), 28100)
