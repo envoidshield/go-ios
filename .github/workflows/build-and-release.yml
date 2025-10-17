@@ -1,0 +1,326 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Release type (major, minor, patch)'
+        required: false
+        default: 'patch'
+
+env:
+  GO_VERSION: '1.21'
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        go: ['1.20', '1.21']
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ matrix.go }}
+    
+    - name: Cache Go modules
+      uses: actions/cache@v3
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    
+    - name: Download dependencies
+      run: |
+        go mod download
+        go mod verify
+    
+    - name: Run tests
+      run: |
+        go test -v -race -coverprofile=coverage.out ./...
+        go test -v -bench=. -benchmem ./ios/ostrace
+    
+    - name: Upload coverage
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.out
+
+  build:
+    name: Build Binaries
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # Linux builds
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm
+            goarm: 7
+            suffix: linux-armv7
+          
+          # macOS builds
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            suffix: darwin-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            suffix: darwin-arm64
+          
+          # Windows builds
+          - os: ubuntu-latest
+            goos: windows
+            goarch: amd64
+            suffix: windows-amd64.exe
+          - os: ubuntu-latest
+            goos: windows
+            goarch: arm64
+            suffix: windows-arm64.exe
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        go mod download
+        # Install jsoniter for high-performance builds
+        go get github.com/json-iterator/go
+    
+    - name: Build standard binary
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+        GOARM: ${{ matrix.goarm }}
+      run: |
+        # Build main go-ios binary
+        go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+          -o go-ios-${{ matrix.suffix }} \
+          .
+        
+        # Build ostrace standalone
+        go build -ldflags="-s -w" \
+          -o ostrace-${{ matrix.suffix }} \
+          ./cmd/ostrace
+        
+        # Build high-performance ostrace
+        go build -tags perf -ldflags="-s -w" \
+          -o ostrace-perf-${{ matrix.suffix }} \
+          ./cmd/ostrace-perf
+    
+    - name: Compress binaries with UPX (Linux only)
+      if: matrix.goos == 'linux' && matrix.goarch != 'arm'
+      run: |
+        sudo apt-get update && sudo apt-get install -y upx
+        # Create compressed versions
+        cp go-ios-${{ matrix.suffix }} go-ios-${{ matrix.suffix }}.upx
+        cp ostrace-${{ matrix.suffix }} ostrace-${{ matrix.suffix }}.upx
+        cp ostrace-perf-${{ matrix.suffix }} ostrace-perf-${{ matrix.suffix }}.upx
+        
+        upx --best --lzma go-ios-${{ matrix.suffix }}.upx
+        upx --best --lzma ostrace-${{ matrix.suffix }}.upx
+        upx --best --lzma ostrace-perf-${{ matrix.suffix }}.upx
+    
+    - name: Calculate checksums
+      run: |
+        if [[ "$RUNNER_OS" == "macOS" ]]; then
+          shasum -a 256 go-ios-${{ matrix.suffix }} > go-ios-${{ matrix.suffix }}.sha256
+          shasum -a 256 ostrace-${{ matrix.suffix }} > ostrace-${{ matrix.suffix }}.sha256
+          shasum -a 256 ostrace-perf-${{ matrix.suffix }} > ostrace-perf-${{ matrix.suffix }}.sha256
+        else
+          sha256sum go-ios-${{ matrix.suffix }} > go-ios-${{ matrix.suffix }}.sha256
+          sha256sum ostrace-${{ matrix.suffix }} > ostrace-${{ matrix.suffix }}.sha256
+          sha256sum ostrace-perf-${{ matrix.suffix }} > ostrace-perf-${{ matrix.suffix }}.sha256
+        fi
+        
+        # Also checksum compressed versions if they exist
+        if [ -f go-ios-${{ matrix.suffix }}.upx ]; then
+          sha256sum go-ios-${{ matrix.suffix }}.upx > go-ios-${{ matrix.suffix }}.upx.sha256
+          sha256sum ostrace-${{ matrix.suffix }}.upx > ostrace-${{ matrix.suffix }}.upx.sha256
+          sha256sum ostrace-perf-${{ matrix.suffix }}.upx > ostrace-perf-${{ matrix.suffix }}.upx.sha256
+        fi
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: binaries-${{ matrix.suffix }}
+        path: |
+          go-ios-${{ matrix.suffix }}*
+          ostrace-${{ matrix.suffix }}*
+          ostrace-perf-${{ matrix.suffix }}*
+
+  build-docker:
+    name: Build Docker Images
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Login to Docker Hub
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+    
+    - name: Login to GitHub Container Registry
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: |
+          envoidshield/go-ios
+          ghcr.io/${{ github.repository }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha
+    
+    - name: Build and push standard image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    
+    - name: Build and push high-performance image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile.perf
+        platforms: linux/amd64,linux/arm64
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: |
+          envoidshield/go-ios:perf
+          envoidshield/go-ios:${{ github.ref_name }}-perf
+          ghcr.io/${{ github.repository }}:perf
+          ghcr.io/${{ github.repository }}:${{ github.ref_name }}-perf
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  release:
+    name: Create Release
+    needs: [build, build-docker]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+      with:
+        path: ./artifacts
+    
+    - name: Prepare release files
+      run: |
+        mkdir -p release
+        # Move all binaries to release directory
+        find artifacts -type f -name "go-ios-*" -o -name "ostrace-*" | while read f; do
+          mv "$f" release/
+        done
+        
+        # Create release notes
+        cat > release/RELEASE_NOTES.md << 'EOF'
+        # Release ${{ github.ref_name }}
+        
+        ## Binaries
+        
+        This release includes three types of binaries:
+        
+        1. **go-ios-{platform}**: The main go-ios CLI tool
+        2. **ostrace-{platform}**: Standalone OS trace tool
+        3. **ostrace-perf-{platform}**: High-performance OS trace tool with jsoniter
+        
+        ### Platform Support
+        
+        - Linux: amd64, arm64, armv7
+        - macOS: amd64 (Intel), arm64 (Apple Silicon)
+        - Windows: amd64, arm64
+        
+        ### Compressed Versions
+        
+        Linux binaries also include `.upx` compressed versions for smaller file size.
+        
+        ### Docker Images
+        
+        ```bash
+        # Standard image
+        docker pull envoidshield/go-ios:${{ github.ref_name }}
+        
+        # High-performance image
+        docker pull envoidshield/go-ios:${{ github.ref_name }}-perf
+        ```
+        
+        ### Checksums
+        
+        All binaries include `.sha256` checksum files for verification.
+        
+        EOF
+    
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: release/*
+        body_path: release/RELEASE_NOTES.md
+        draft: false
+        prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-homebrew:
+    name: Update Homebrew Formula
+    needs: release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-rc') && !contains(github.ref, '-beta')
+    steps:
+    - name: Update Homebrew Formula
+      uses: dawidd6/action-homebrew-bump-formula@v3
+      with:
+        token: ${{ secrets.HOMEBREW_GITHUB_TOKEN }}
+        formula: go-ios
+        tap: envoidshield/homebrew-tap

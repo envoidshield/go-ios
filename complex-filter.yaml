@@ -1,0 +1,33 @@
+filters:
+  - type: OR
+    children:
+      # Multiple regex patterns
+      - field: message
+        operator: REGEX
+        value: "error.*0x[0-9a-fA-F]+"
+      - field: message
+        operator: REGEX
+        value: "warning.*[0-9]{4,}"
+      # Complex nested conditions
+      - type: AND
+        children:
+          - field: subsystem
+            operator: CONTAINS
+            value: bluetooth
+          - type: OR
+            children:
+              - field: level
+                operator: EQUALS
+                value: error
+              - field: level
+                operator: EQUALS
+                value: warning
+      # More conditions
+      - type: AND
+        children:
+          - field: image_name
+            operator: CONTAINS
+            value: SpringBoard
+          - field: message
+            operator: CONTAINS
+            value: memory

@@ -1,0 +1,71 @@
+name: Build Binaries
+
+on:
+  push:
+    branches: [ main, develop, feature/* ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # Linux
+          - goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+          - goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+          
+          # macOS
+          - goos: darwin
+            goarch: amd64
+            suffix: darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            suffix: darwin-arm64
+          
+          # Windows
+          - goos: windows
+            goarch: amd64
+            suffix: windows-amd64.exe
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+    
+    - name: Install dependencies
+      run: |
+        go mod download
+        go get github.com/json-iterator/go
+    
+    - name: Build binaries
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+      run: |
+        # Build main go-ios binary
+        go build -ldflags="-s -w" -o go-ios-${{ matrix.suffix }} .
+        
+        # Build ostrace standalone
+        go build -ldflags="-s -w" -o ostrace-${{ matrix.suffix }} ./cmd/ostrace
+        
+        # Build high-performance ostrace
+        go build -tags perf -ldflags="-s -w" -o ostrace-perf-${{ matrix.suffix }} ./cmd/ostrace-perf
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: binaries-${{ matrix.suffix }}
+        path: |
+          go-ios-${{ matrix.suffix }}
+          ostrace-${{ matrix.suffix }}
+          ostrace-perf-${{ matrix.suffix }}

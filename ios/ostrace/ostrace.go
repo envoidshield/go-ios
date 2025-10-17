@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/danielpaulus/go-ios/ios"
@@ -16,6 +17,25 @@ import (
 const (
 	serviceName     = "com.apple.os_trace_relay"
 	shimServiceName = "com.apple.os_trace_relay.shim.remote"
+)
+
+// Buffer pools to reduce allocations
+var (
+	// Pool for small buffers (headers, etc)
+	smallBufferPool = sync.Pool{
+		New: func() interface{} {
+			buf := make([]byte, 256)
+			return &buf
+		},
+	}
+	
+	// Pool for larger buffers (log chunks)
+	largeBufferPool = sync.Pool{
+		New: func() interface{} {
+			buf := make([]byte, 4096)
+			return &buf
+		},
+	}
 )
 
 // OsTraceCodec handles the custom os_trace protocol
@@ -51,23 +71,24 @@ func (c *OsTraceCodec) WriteRequest(w io.Writer, msg interface{}) error {
 // ReadStreamChunk reads a streaming log chunk
 // Protocol: 0x02 status byte + 4-byte little-endian length + data
 func (c *OsTraceCodec) ReadStreamChunk(r io.Reader) ([]byte, error) {
-	// Read status byte (should be 0x02 for log entries)
-	statusByte := make([]byte, 1)
-	if _, err := io.ReadFull(r, statusByte); err != nil {
+	// Get a small buffer from pool for header
+	headerBufPtr := smallBufferPool.Get().(*[]byte)
+	headerBuf := (*headerBufPtr)[:5] // 1 status + 4 length
+	defer smallBufferPool.Put(headerBufPtr)
+	
+	// Read status byte and length in one go
+	if _, err := io.ReadFull(r, headerBuf); err != nil {
 		return nil, err
 	}
 
-	if statusByte[0] != 0x02 {
-		return nil, fmt.Errorf("unexpected status byte: 0x%02x (expected 0x02)", statusByte[0])
+	if headerBuf[0] != 0x02 {
+		return nil, fmt.Errorf("unexpected status byte: 0x%02x (expected 0x02)", headerBuf[0])
 	}
 
 	// Read 4-byte little-endian length
-	var length uint32
-	if err := binary.Read(r, binary.LittleEndian, &length); err != nil {
-		return nil, fmt.Errorf("failed to read length: %w", err)
-	}
+	length := binary.LittleEndian.Uint32(headerBuf[1:5])
 
-	// Read chunk data
+	// Allocate exact size needed (can't use pool here as size varies)
 	data := make([]byte, length)
 	if _, err := io.ReadFull(r, data); err != nil {
 		return nil, fmt.Errorf("failed to read chunk data: %w", err)

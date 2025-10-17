@@ -1,0 +1,33 @@
+# Filter for various system errors and warnings
+filters:
+  - type: OR
+    children:
+      # Any error level logs
+      - field: level
+        operator: EQUALS
+        value: error
+      
+      # SpringBoard crashes or errors
+      - type: AND
+        children:
+          - field: image_name
+            operator: EQUALS
+            value: SpringBoard
+          - field: message
+            operator: CONTAINS
+            value: crash
+      
+      # Memory warnings
+      - field: message
+        operator: CONTAINS
+        value: "memory pressure"
+      
+      # CoreData warnings
+      - type: AND
+        children:
+          - field: subsystem
+            operator: EQUALS
+            value: com.apple.CoreData
+          - field: level
+            operator: EQUALS
+            value: warning

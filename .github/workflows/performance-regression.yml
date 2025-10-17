@@ -1,0 +1,101 @@
+name: Performance Regression Tests
+
+on:
+  pull_request:
+    paths:
+      - 'ios/ostrace/**'
+      - 'cmd/ostrace/**'
+      - 'cmd/ostrace-perf/**'
+  push:
+    branches: [ main ]
+    paths:
+      - 'ios/ostrace/**'
+      - 'cmd/ostrace/**'
+      - 'cmd/ostrace-perf/**'
+
+jobs:
+  benchmark:
+    name: Run Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+    
+    - name: Install dependencies
+      run: |
+        go mod download
+        go get github.com/json-iterator/go
+    
+    - name: Run benchmarks
+      run: |
+        cd ios/ostrace
+        go test -bench=. -benchmem -benchtime=10s -count=5 | tee ../../benchmark_results.txt
+    
+    - name: Parse benchmark results
+      id: bench
+      run: |
+        # Extract key metrics
+        echo "## Benchmark Results" > benchmark_summary.md
+        echo "" >> benchmark_summary.md
+        echo "| Benchmark | ns/op | B/op | allocs/op |" >> benchmark_summary.md
+        echo "|-----------|-------|------|-----------|" >> benchmark_summary.md
+        
+        grep "^Benchmark" benchmark_results.txt | while read line; do
+          name=$(echo $line | awk '{print $1}')
+          nsop=$(echo $line | awk '{print $3}')
+          bop=$(echo $line | awk '{print $5}')
+          allocs=$(echo $line | awk '{print $7}')
+          echo "| $name | $nsop | $bop | $allocs |" >> benchmark_summary.md
+        done
+        
+        # Check for performance regression
+        if [ -f .github/performance_baseline.txt ]; then
+          echo "" >> benchmark_summary.md
+          echo "## Performance Comparison" >> benchmark_summary.md
+          # Simple comparison logic here
+        fi
+    
+    - name: Comment PR
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const summary = fs.readFileSync('benchmark_summary.md', 'utf8');
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: summary
+          });
+    
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v3
+      with:
+        name: benchmark-results
+        path: |
+          benchmark_results.txt
+          benchmark_summary.md
+    
+    - name: Store baseline
+      if: github.ref == 'refs/heads/main'
+      run: |
+        mkdir -p .github
+        cp benchmark_results.txt .github/performance_baseline.txt
+    
+    - name: Check regression
+      run: |
+        # Simple regression check
+        # If jsoniter becomes slower than standard JSON, fail
+        STANDARD=$(grep "BenchmarkStandardJSON" benchmark_results.txt | awk '{print $3}' | head -1)
+        JSONITER=$(grep "BenchmarkJsoniterJSON" benchmark_results.txt | awk '{print $3}' | head -1)
+        
+        if (( $(echo "$JSONITER > $STANDARD" | bc -l) )); then
+          echo "Performance regression detected: jsoniter is slower than standard JSON"
+          exit 1
+        fi

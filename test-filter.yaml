@@ -1,0 +1,5 @@
+filters:
+  # Match messages from SpringBoard
+  - field: image_name
+    operator: EQUALS
+    value: SpringBoard

@@ -132,7 +132,7 @@ Usage:
   ios setlocationgpx [options] [--gpxfilepath=<gpxfilepath>]
   ios syslog [--parse] [options]
   ios sysmontap [options]
-  ios ostrace [--list] [--process=<name>] [--pid=<pid>] [--archive] [--archive-file=<file>] [options]
+  ios ostrace [--list] [--process=<name>] [--pid=<pid>] [--archive] [--archive-file=<file>] [--filter=<pattern>] [--filter-config=<file>] [options]
   ios timeformat (24h | 12h | toggle | get) [--force] [options]
   ios tunnel ls [options]
   ios tunnel start [options] [--pair-record-path=<pairrecordpath>] [--userspace]
@@ -258,8 +258,9 @@ The commands work as following:
    ios setlocationgpx [options] [--gpxfilepath=<gpxfilepath>]         Updates the location of the device based on the data in a GPX file. Example: setlocationgpx --gpxfilepath=/home/username/location.gpx
    ios syslog [--parse] [options]                                     Prints a device's log output, Use --parse to parse the fields from the log
    ios sysmontap                                                      Get system stats like MEM, CPU
-   ios ostrace [--list] [--process=<name>] [--pid=<pid>] [--archive] [--archive-file=<file>] [options]  Advanced log streaming using os_trace_relay service. 
+   ios ostrace [--list] [--process=<name>] [--pid=<pid>] [--archive] [--archive-file=<file>] [--filter=<pattern>] [--filter-config=<file>] [options]  Advanced log streaming using os_trace_relay service. 
    >                                                                  Use --list to show running processes, --process or --pid to filter logs, --archive to download archived logs
+   >                                                                  Use --filter for simple content filtering, --filter-config for complex YAML-based filters
    ios timeformat (24h | 12h | toggle | get) [--force] [options] Sets, or returns the state of the "time format". iOS 11+ only (Use --force to try on older versions).
    ios tunnel ls                                                      List currently started tunnels. Use --enabletun to activate using TUN devices rather than user space network. Requires sudo/admin shells. 
    ios tunnel start [options] [--pair-record-path=<pairrecordpath>] [--enabletun]   Creates a tunnel connection to the device. If the device was not paired with the host yet, device pairing will also be executed.
@@ -2451,6 +2452,25 @@ func runOsTrace(device ios.DeviceEntry, arguments docopt.Opts) {
 		}
 	}
 	
+	// Load filters if specified
+	var filterConfig *ostrace.FilterConfig
+	
+	// Check for simple filter
+	simpleFilter, _ := arguments.String("--filter")
+	if simpleFilter != "" {
+		filterConfig = ostrace.CreateSimpleFilter(simpleFilter)
+		log.Printf("Using simple filter: message contains '%s'", simpleFilter)
+	}
+	
+	// Check for filter config file (overrides simple filter)
+	filterConfigPath, _ := arguments.String("--filter-config")
+	if filterConfigPath != "" {
+		var err error
+		filterConfig, err = ostrace.LoadFilterConfig(filterConfigPath)
+		exitIfError("Failed to load filter config", err)
+		log.Printf("Loaded filter configuration from %s", filterConfigPath)
+	}
+	
 	// Start streaming
 	err = conn.StartStreaming(config)
 	exitIfError("Failed to start streaming", err)
@@ -2476,6 +2496,11 @@ func runOsTrace(device ios.DeviceEntry, arguments docopt.Opts) {
 			}
 			log.Printf("Error reading log entry: %v", err)
 			continue
+		}
+		
+		// Apply filters
+		if filterConfig != nil && !ostrace.EvaluateFilters(entry, filterConfig) {
+			continue // Skip this entry
 		}
 		
 		if JSONdisabled {

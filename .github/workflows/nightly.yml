@@ -1,0 +1,183 @@
+name: Nightly Builds
+
+on:
+  schedule:
+    # Run at 2 AM UTC every day
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  GO_VERSION: '1.21'
+
+jobs:
+  build-nightly:
+    name: Build Nightly
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # Focus on most popular platforms for nightly
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            suffix: darwin-arm64
+          - os: ubuntu-latest
+            goos: windows
+            goarch: amd64
+            suffix: windows-amd64.exe
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+    
+    - name: Get version info
+      id: version
+      run: |
+        echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+        echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+        echo "branch=$(git rev-parse --abbrev-ref HEAD)" >> $GITHUB_OUTPUT
+    
+    - name: Install dependencies
+      run: |
+        go mod download
+        go get github.com/json-iterator/go
+        # Try to get sonic for supported platforms
+        if [[ "${{ matrix.goos }}" == "linux" || "${{ matrix.goos }}" == "darwin" ]] && \
+           [[ "${{ matrix.goarch }}" == "amd64" || "${{ matrix.goarch }}" == "arm64" ]]; then
+          go get github.com/bytedance/sonic || true
+        fi
+    
+    - name: Run tests
+      run: |
+        go test -v -short ./...
+        go test -v -bench=. -benchtime=10s ./ios/ostrace | tee benchmark-${{ matrix.suffix }}.txt
+    
+    - name: Build all variants
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+      run: |
+        VERSION="nightly-${{ steps.version.outputs.date }}-${{ steps.version.outputs.sha }}"
+        
+        # Standard build
+        go build -ldflags="-s -w -X main.version=${VERSION}" \
+          -o go-ios-nightly-${{ matrix.suffix }} \
+          .
+        
+        # Standard ostrace
+        go build -ldflags="-s -w -X main.version=${VERSION}" \
+          -o ostrace-nightly-${{ matrix.suffix }} \
+          ./cmd/ostrace
+        
+        # High-performance ostrace with jsoniter
+        go build -tags perf -ldflags="-s -w -X main.version=${VERSION}" \
+          -o ostrace-perf-nightly-${{ matrix.suffix }} \
+          ./cmd/ostrace-perf
+        
+        # Try to build with sonic if available
+        if [[ "${{ matrix.goos }}" == "linux" || "${{ matrix.goos }}" == "darwin" ]] && \
+           [[ "${{ matrix.goarch }}" == "amd64" || "${{ matrix.goarch }}" == "arm64" ]]; then
+          go build -tags "perf sonic" -ldflags="-s -w -X main.version=${VERSION}" \
+            -o ostrace-sonic-nightly-${{ matrix.suffix }} \
+            ./cmd/ostrace-perf || echo "Sonic build not available"
+        fi
+    
+    - name: Create info file
+      run: |
+        cat > build-info-${{ matrix.suffix }}.json << EOF
+        {
+          "version": "nightly-${{ steps.version.outputs.date }}-${{ steps.version.outputs.sha }}",
+          "commit": "$(git rev-parse HEAD)",
+          "branch": "${{ steps.version.outputs.branch }}",
+          "build_date": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
+          "go_version": "$(go version)",
+          "platform": "${{ matrix.goos }}/${{ matrix.goarch }}"
+        }
+        EOF
+    
+    - name: Upload nightly artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: nightly-${{ steps.version.outputs.date }}-${{ matrix.suffix }}
+        path: |
+          *-nightly-${{ matrix.suffix }}*
+          build-info-${{ matrix.suffix }}.json
+          benchmark-${{ matrix.suffix }}.txt
+        retention-days: 7
+
+  publish-nightly:
+    name: Publish Nightly Release
+    needs: build-nightly
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Get version info
+      id: version
+      run: |
+        echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+        echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+    
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+      with:
+        path: ./artifacts
+    
+    - name: Prepare release
+      run: |
+        mkdir -p release
+        find artifacts -type f | while read f; do
+          cp "$f" release/
+        done
+        
+        # Create changelog
+        cat > release/NIGHTLY_CHANGELOG.md << 'EOF'
+        # Nightly Build ${{ steps.version.outputs.date }}-${{ steps.version.outputs.sha }}
+        
+        This is an automated nightly build. It may be unstable.
+        
+        ## What's Included
+        
+        - go-ios: Main CLI tool
+        - ostrace: Standard OS trace tool  
+        - ostrace-perf: High-performance version with jsoniter
+        - ostrace-sonic: Ultra-high-performance version with sonic (when available)
+        
+        ## Recent Changes
+        
+        EOF
+        
+        # Add recent commits
+        git log --oneline -10 >> release/NIGHTLY_CHANGELOG.md
+    
+    - name: Delete old nightly release
+      uses: dev-drprasad/delete-tag-and-release@v1.0
+      with:
+        tag_name: nightly
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+      continue-on-error: true
+    
+    - name: Create nightly release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: nightly
+        name: Nightly Build ${{ steps.version.outputs.date }}
+        body_path: release/NIGHTLY_CHANGELOG.md
+        files: release/*
+        prerelease: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
