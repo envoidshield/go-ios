@@ -35,15 +35,16 @@ var (
 
 func main() {
 	var (
-		udid       = flag.String("udid", "", "Device UDID")
-		filter     = flag.String("filter", "", "Simple content filter")
-		filterFile = flag.String("filter-config", "", "YAML filter config file")
-		list       = flag.Bool("list", false, "List processes")
-		jsonOutput = flag.Bool("json", false, "Output as JSON")
-		workers    = flag.Int("workers", runtime.NumCPU(), "Number of worker goroutines")
-		bufferSize = flag.Int("buffer", 1000, "Log entry buffer size")
-		stats      = flag.Bool("stats", false, "Show performance statistics")
-		help       = flag.Bool("h", false, "Show help")
+		udid          = flag.String("udid", "", "Device UDID")
+		filter        = flag.String("filter", "", "Simple content filter")
+		filterFile    = flag.String("filter-config", "", "YAML filter config file")
+		list          = flag.Bool("list", false, "List processes")
+		jsonOutput    = flag.Bool("json", false, "Output as JSON")
+		workers       = flag.Int("workers", runtime.NumCPU(), "Number of worker goroutines")
+		bufferSize    = flag.Int("buffer", 1000, "Log entry buffer size")
+		stats         = flag.Bool("stats", false, "Show performance statistics")
+		help          = flag.Bool("h", false, "Show help")
+		pymobileTunnel = flag.Int("pymobile-tunnel", 0, "Use pymobiledevice3 tunnel on specified port (e.g., 49151)")
 	)
 	flag.Parse()
 
@@ -64,10 +65,39 @@ func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	// Get device
-	device, err := ios.GetDevice(*udid)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to get device: %v\n", err)
-		os.Exit(1)
+	var device ios.DeviceEntry
+	var err error
+	
+	if *pymobileTunnel > 0 {
+		// Use pymobiledevice3 tunnel
+		if *udid == "" {
+			// Get first device from tunnel
+			devices, err := ios.ListDevicesWithPyMobileTunnel(*pymobileTunnel)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to list devices via pymobile tunnel: %v\n", err)
+				os.Exit(1)
+			}
+			if len(devices.DeviceList) == 0 {
+				fmt.Fprintf(os.Stderr, "No devices found via pymobile tunnel\n")
+				os.Exit(1)
+			}
+			device = devices.DeviceList[0]
+		} else {
+			// Get specific device from tunnel
+			device, err = ios.GetDeviceWithPyMobileTunnel(*udid, *pymobileTunnel)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to get device via pymobile tunnel: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "Using device %s via pymobiledevice3 tunnel\n", device.Properties.SerialNumber)
+	} else {
+		// Use regular connection
+		device, err = ios.GetDevice(*udid)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to get device: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Connect to ostrace
