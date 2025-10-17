@@ -127,26 +127,36 @@ func main() {
 	targetPID := *pid
 	if *processName != "" && targetPID == -1 {
 		fmt.Fprintf(os.Stderr, "Looking up process '%s'...\n", *processName)
-		processes, err := conn.GetProcessList()
+		
+		// Create a separate connection for process lookup to avoid interfering with streaming
+		lookupConn, err := ostrace.New(device)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to get process list: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Warning: Failed to create lookup connection: %v\n", err)
 			fmt.Fprintf(os.Stderr, "You can use 'ios ps' to find the PID and use --pid instead\n")
 		} else {
-			found := false
-			for _, p := range processes {
-				if p.Label == *processName {
-					targetPID = p.PID
-					found = true
-					fmt.Fprintf(os.Stderr, "Found process '%s' with PID %d\n", *processName, targetPID)
-					break
-				}
-			}
-			if !found {
-				fmt.Fprintf(os.Stderr, "Process '%s' not found. Available processes:\n", *processName)
+			processes, err := lookupConn.GetProcessList()
+			lookupConn.Close() // Close immediately after use
+			
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: Failed to get process list: %v\n", err)
+				fmt.Fprintf(os.Stderr, "You can use 'ios ps' to find the PID and use --pid instead\n")
+			} else {
+				found := false
 				for _, p := range processes {
-					fmt.Fprintf(os.Stderr, "  %d: %s\n", p.PID, p.Label)
+					if p.Label == *processName {
+						targetPID = p.PID
+						found = true
+						fmt.Fprintf(os.Stderr, "Found process '%s' with PID %d\n", *processName, targetPID)
+						break
+					}
 				}
-				os.Exit(1)
+				if !found {
+					fmt.Fprintf(os.Stderr, "Process '%s' not found. Available processes:\n", *processName)
+					for _, p := range processes {
+						fmt.Fprintf(os.Stderr, "  %d: %s\n", p.PID, p.Label)
+					}
+					os.Exit(1)
+				}
 			}
 		}
 	}
