@@ -302,7 +302,7 @@ type LogEntry struct {
 
 // StreamConfig configures the log streaming
 type StreamConfig struct {
-	// Filter by process ID (0 means no filter)
+	// Filter by process ID (-1 means all processes, 0 is kernel, positive values are specific PIDs)
 	PID int
 	// Filter by log level
 	LogLevel string
@@ -322,16 +322,12 @@ type StreamLogsResponse struct {
 // StartStreaming starts streaming syslog lines
 // Based on pymobiledevice3: {'Request': 'StartActivity', 'MessageFilter': 65535, 'Pid': pid, 'StreamFlags': 60}
 func (c *Connection) StartStreaming(config StreamConfig) error {
+	// Use the PID directly - 0 is valid for kernel, -1 means all processes
 	request := map[string]interface{}{
 		"Request":       "StartActivity",
 		"MessageFilter": uint64(65535), // Include all message types
-		"Pid":           config.PID,    // -1 for all processes
+		"Pid":           config.PID,    // 0 for kernel, specific PID, or -1 for all
 		"StreamFlags":   uint64(60),    // Standard stream flags
-	}
-
-	// If PID not specified, use -1 (all processes)
-	if config.PID == 0 {
-		request["Pid"] = -1
 	}
 
 	// Send request
