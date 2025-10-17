@@ -270,6 +270,11 @@ ostrace-perf -pymobile-tunnel 49151 -pid 35 -filter-config examples/filters/spri
 - **For RSD**: Verify RSD host and port are correct, check device network connectivity
 - **For regular connection**: Check device USB connection
 
+### "Device not found" with RSD
+- Verify the UDID matches exactly (case-sensitive)
+- Check if the device is connected via USB vs network tunnel
+- For USB devices, use regular connection instead of RSD
+
 ### "Process not found: SpringBoard"
 - Process may not be running
 - Use `-list` to see available processes

@@ -17,9 +17,15 @@ const (
 
 // PyMobileTunnelInfo represents tunnel information from pymobiledevice3
 type PyMobileTunnelInfo struct {
-	TunnelAddress string `json:"tunnel-address"`
-	TunnelPort    int    `json:"tunnel-port"`
-	Interface     string `json:"interface"`
+	TaskIdentifier     string                 `json:"task_identifier,omitempty"`
+	DeviceIdentifier   string                 `json:"device_identifier,omitempty"`
+	TunnelAddress      string                 `json:"tunnel-address"`
+	TunnelPort         int                    `json:"tunnel-port"`
+	Interface          string                 `json:"interface"`
+	Protocol           string                 `json:"protocol,omitempty"`
+	DirectIPAddr       string                 `json:"direct_ip_addr,omitempty"`
+	DeviceInformation  map[string]interface{} `json:"device_information,omitempty"`
+	ConnectionProtocol string                 `json:"connection_protocol,omitempty"`
 }
 
 // PyMobileTunnelClient connects to pymobiledevice3's tunnel daemon
