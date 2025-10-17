@@ -125,11 +125,11 @@ func (c *Connection) FastReadLogEntry() (*LogEntry, error) {
 	imageNameLen := int(binary.LittleEndian.Uint16(chunkBytes[offset:offset+2]))
 	offset += 2
 	messageLen := int(binary.LittleEndian.Uint16(chunkBytes[offset:offset+2]))
-	offset += 10
+	offset += 2 + 6  // 2 for the field, 6 bytes skip
 	subsystemLen := int(binary.LittleEndian.Uint32(chunkBytes[offset:offset+4]))
 	offset += 4
 	categoryLen := int(binary.LittleEndian.Uint32(chunkBytes[offset:offset+4]))
-	offset += 8
+	offset += 4 + 2  // 4 for the field, plus 2 bytes padding (was 8, causing 2-char truncation)
 	
 	// Find null-terminated filename
 	filenameStart := offset

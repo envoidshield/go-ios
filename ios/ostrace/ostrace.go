@@ -389,18 +389,18 @@ func (c *Connection) ReadLogEntry() (*LogEntry, error) {
 	}
 
 	// Based on pymobiledevice3 syslog_t struct:
-	// Bytes(9), pid, Bytes(42), timestamp(8), Bytes(1), level, Bytes(38),
-	// image_name_size(2), message_size(2), Bytes(6), subsystem_size(4), category_size(4), Bytes(4)
+	// Bytes(7), pid, Bytes(42), timestamp(8), Bytes(1), level, Bytes(38),
+	// image_name_size(2), message_size(2), Bytes(6), subsystem_size(4), category_size(4)
 	// Then: filename (null-terminated), image_name, message, [subsystem, category]
 
-	if len(chunkBytes) < 116 { // 9+4+42+8+1+1+38+2+2+6+4+4+4 = 125 minimum
+	if len(chunkBytes) < 116 { // minimum size check
 		return nil, fmt.Errorf("log chunk too small: %d bytes", len(chunkBytes))
 	}
 
 	// Parse according to pymobiledevice3 struct
 	offset := 0
 	
-	// Skip 9 bytes
+	// Skip 9 bytes (initial padding)
 	offset += 9
 	
 	// PID (4 bytes, little-endian)
@@ -450,8 +450,8 @@ func (c *Connection) ReadLogEntry() (*LogEntry, error) {
 	categoryLen := binary.LittleEndian.Uint32(chunkBytes[offset:offset+4])
 	offset += 4
 	
-	// Skip 4 bytes
-	offset += 4
+	// Skip 2 bytes after category size (was 4, causing filename truncation)
+	offset += 2
 	
 	// Now read the variable-length fields
 	reader := bytes.NewReader(chunkBytes[offset:])
