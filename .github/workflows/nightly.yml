@@ -110,7 +110,7 @@ jobs:
         EOF
     
     - name: Upload nightly artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: nightly-${{ steps.version.outputs.date }}-${{ matrix.suffix }}
         path: |
