@@ -45,6 +45,8 @@ func main() {
 		stats         = flag.Bool("stats", false, "Show performance statistics")
 		help          = flag.Bool("h", false, "Show help")
 		pymobileTunnel = flag.Int("pymobile-tunnel", 0, "Use pymobiledevice3 tunnel on specified port (e.g., 49151)")
+		pid           = flag.Int("pid", -1, "Filter by process ID (device-side filtering)")
+		processName   = flag.String("process", "", "Filter by process name (requires process lookup)")
 	)
 	flag.Parse()
 
@@ -121,6 +123,34 @@ func main() {
 		return
 	}
 
+	// Handle process name to PID conversion
+	targetPID := *pid
+	if *processName != "" && targetPID == -1 {
+		fmt.Fprintf(os.Stderr, "Looking up process '%s'...\n", *processName)
+		processes, err := conn.GetProcessList()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to get process list: %v\n", err)
+			fmt.Fprintf(os.Stderr, "You can use 'ios ps' to find the PID and use --pid instead\n")
+		} else {
+			found := false
+			for _, p := range processes {
+				if p.Label == *processName {
+					targetPID = p.PID
+					found = true
+					fmt.Fprintf(os.Stderr, "Found process '%s' with PID %d\n", *processName, targetPID)
+					break
+				}
+			}
+			if !found {
+				fmt.Fprintf(os.Stderr, "Process '%s' not found. Available processes:\n", *processName)
+				for _, p := range processes {
+					fmt.Fprintf(os.Stderr, "  %d: %s\n", p.PID, p.Label)
+				}
+				os.Exit(1)
+			}
+		}
+	}
+
 	// Load filters
 	var filterConfig *ostrace.FilterConfig
 	if *filter != "" {
@@ -133,8 +163,11 @@ func main() {
 		}
 	}
 
-	// Start streaming
-	config := ostrace.StreamConfig{PID: -1}
+	// Start streaming with device-side PID filtering
+	config := ostrace.StreamConfig{PID: targetPID}
+	if targetPID != -1 {
+		fmt.Fprintf(os.Stderr, "Starting stream with device-side PID filter: %d\n", targetPID)
+	}
 	if err := conn.StartStreaming(config); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start streaming: %v\n", err)
 		os.Exit(1)
