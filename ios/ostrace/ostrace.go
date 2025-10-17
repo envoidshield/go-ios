@@ -450,8 +450,8 @@ func (c *Connection) ReadLogEntry() (*LogEntry, error) {
 	categoryLen := binary.LittleEndian.Uint32(chunkBytes[offset:offset+4])
 	offset += 4
 	
-	// Skip 2 bytes after category size (was 4, causing filename truncation)
-	offset += 2
+	// Skip 4 bytes after category size
+	offset += 4
 	
 	// Now read the variable-length fields
 	reader := bytes.NewReader(chunkBytes[offset:])

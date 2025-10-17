@@ -129,7 +129,10 @@ func (c *Connection) FastReadLogEntry() (*LogEntry, error) {
 	subsystemLen := int(binary.LittleEndian.Uint32(chunkBytes[offset:offset+4]))
 	offset += 4
 	categoryLen := int(binary.LittleEndian.Uint32(chunkBytes[offset:offset+4]))
-	offset += 4 + 2  // 4 for the field, plus 2 bytes padding (was 8, causing 2-char truncation)
+	offset += 4
+	
+	// Skip 4 bytes after category size
+	offset += 4
 	
 	// Find null-terminated filename
 	filenameStart := offset
