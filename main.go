@@ -157,6 +157,7 @@ Options:
   --proxyurl=<url>          Set this if you want go-ios to use a http proxy for outgoing requests, like for downloading images or contacting Apple during device activation.
   >                         A simple format like: "http://PROXY_LOGIN:PROXY_PASS@proxyIp:proxyPort" works. Otherwise use the HTTP_PROXY system env var.
   --userspace-port=<port>   Optional. Set this if you run a command supplying rsd-port and address and your device is using userspace tunnel
+  --pymobile-tunnel=<port>  Use pymobiledevice3's tunnel daemon on the specified port (default: 49151) instead of go-ios tunnel
 
 The commands work as following:
 	The default output of all commands is JSON. Should you prefer human readable outout, specify the --nojson option with your command.
@@ -356,10 +357,44 @@ The commands work as following:
 	}
 
 	userspaceTunnelPort, userspaceTunnelErr := arguments.Int("--userspace-port")
+	pymobileTunnelPort, pymobileTunnelErr := arguments.Int("--pymobile-tunnel")
 
-	device, err := ios.GetDevice(udid)
+	// Check if pymobile tunnel should be used
+	var device ios.DeviceEntry
+	if pymobileTunnelErr == nil {
+		// Use pymobiledevice3 tunnel
+		if pymobileTunnelPort == 0 {
+			pymobileTunnelPort = ios.DefaultPyMobileTunnelPort
+		}
+		if udid == "" {
+			// If no UDID specified, get the first device from pymobile tunnel
+			deviceList, err := ios.ListDevicesWithPyMobileTunnel(pymobileTunnelPort)
+			if err != nil || len(deviceList.DeviceList) == 0 {
+				log.WithError(err).Warn("Failed to list devices from pymobiledevice3 tunnel")
+				device, err = ios.GetDevice(udid)
+				exitIfError("Device not found: "+udid, err)
+			} else {
+				device = deviceList.DeviceList[0]
+				log.Infof("Using device %s from pymobiledevice3 tunnel", device.Properties.SerialNumber)
+			}
+		} else {
+			device, err = ios.GetDeviceWithPyMobileTunnel(udid, pymobileTunnelPort)
+			if err != nil {
+				// Fall back to regular device if pymobile tunnel fails
+				log.WithError(err).Warn("Failed to connect through pymobiledevice3 tunnel, falling back to regular connection")
+				device, err = ios.GetDevice(udid)
+				exitIfError("Device not found: "+udid, err)
+			} else {
+				log.Infof("Connected to device through pymobiledevice3 tunnel on port %d", pymobileTunnelPort)
+			}
+		}
+	} else {
+		// Regular device connection
+		device, err = ios.GetDevice(udid)
+	}
+	
 	// device address and rsd port are only available after the tunnel started
-	if !tunnelCommand {
+	if !tunnelCommand && pymobileTunnelErr != nil {
 		exitIfError("Device not found: "+udid, err)
 		if addressErr == nil && rsdErr == nil {
 			if userspaceTunnelErr == nil {
@@ -368,7 +403,7 @@ The commands work as following:
 				device.UserspaceTUNPort = userspaceTunnelPort
 			}
 			device = deviceWithRsdProvider(device, udid, address, rsdPort)
-		} else {
+		} else if pymobileTunnelErr != nil { // Only try tunnel info if not using pymobile tunnel
 			info, err := tunnel.TunnelInfoForDevice(device.Properties.SerialNumber, tunnelInfoHost, tunnelInfoPort)
 			if err == nil {
 				device.UserspaceTUNPort = info.UserspaceTUNPort
