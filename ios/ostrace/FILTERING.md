@@ -32,7 +32,7 @@ Filter configurations use YAML format and support logical operations (AND, OR, N
 ### Available Fields
 
 - `message` - The log message content
-- `process_id` - Numeric process ID
+- `pid` - Numeric process ID
 - `level` - Log level (info, debug, error, warning, etc.)
 - `image_name` - Process/binary name (e.g., SpringBoard, bluetoothd)
 - `filename` - Source file name

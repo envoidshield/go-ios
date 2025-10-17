@@ -291,7 +291,7 @@ type SyslogEntryHeader struct {
 // LogEntry represents a parsed log entry from the binary stream
 type LogEntry struct {
 	Timestamp time.Time `json:"timestamp"`
-	ProcessID int       `json:"process_id"`
+	ProcessID int       `json:"pid"`
 	Level     string    `json:"level"`
 	ImageName string    `json:"image_name"`
 	Message   string    `json:"message"`

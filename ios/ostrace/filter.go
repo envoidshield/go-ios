@@ -18,7 +18,7 @@ type FilterConfig struct {
 // Filter represents a single filter or logical operation
 type Filter struct {
 	Type     string   `yaml:"type,omitempty"`     // "AND", "OR", "NOT" (for logical operations)
-	Field    string   `yaml:"field,omitempty"`    // "message", "process_id", "subsystem", "category", "level", "filename", "image_name"
+	Field    string   `yaml:"field,omitempty"`    // "message", "pid", "subsystem", "category", "level", "filename", "image_name"
 	Operator string   `yaml:"operator,omitempty"` // "CONTAINS", "EQUALS", "NOT_CONTAINS", "STARTS_WITH", "ENDS_WITH", "REGEX"
 	Value    string   `yaml:"value,omitempty"`    // Pattern/value to match
 	Children []Filter `yaml:"children,omitempty"` // For nested filters (AND/OR/NOT)
@@ -74,7 +74,7 @@ func validateFilter(filter Filter) error {
 
 	// Validate field names
 	switch filter.Field {
-	case "message", "process_id", "level", "image_name", "filename", "category", "subsystem":
+	case "message", "pid", "level", "image_name", "filename", "category", "subsystem":
 		// Valid fields
 	default:
 		return fmt.Errorf("unknown field: %s", filter.Field)
@@ -156,7 +156,7 @@ func evaluateFieldFilter(entry *LogEntry, filter Filter) bool {
 	switch filter.Field {
 	case "message":
 		fieldValue = entry.Message
-	case "process_id":
+	case "pid":
 		fieldValue = strconv.Itoa(entry.ProcessID)
 	case "level":
 		fieldValue = entry.Level
