@@ -44,6 +44,7 @@ import (
 	"github.com/danielpaulus/go-ios/ios/instruments"
 	"github.com/danielpaulus/go-ios/ios/mcinstall"
 	"github.com/danielpaulus/go-ios/ios/notificationproxy"
+	"github.com/danielpaulus/go-ios/ios/ostrace"
 	"github.com/danielpaulus/go-ios/ios/pcap"
 	syslog "github.com/danielpaulus/go-ios/ios/syslog"
 	"github.com/docopt/docopt-go"
@@ -131,6 +132,7 @@ Usage:
   ios setlocationgpx [options] [--gpxfilepath=<gpxfilepath>]
   ios syslog [--parse] [options]
   ios sysmontap [options]
+  ios ostrace [--list] [--process=<name>] [--pid=<pid>] [--archive] [--archive-file=<file>] [options]
   ios timeformat (24h | 12h | toggle | get) [--force] [options]
   ios tunnel ls [options]
   ios tunnel start [options] [--pair-record-path=<pairrecordpath>] [--userspace]
@@ -255,6 +257,8 @@ The commands work as following:
    ios setlocationgpx [options] [--gpxfilepath=<gpxfilepath>]         Updates the location of the device based on the data in a GPX file. Example: setlocationgpx --gpxfilepath=/home/username/location.gpx
    ios syslog [--parse] [options]                                     Prints a device's log output, Use --parse to parse the fields from the log
    ios sysmontap                                                      Get system stats like MEM, CPU
+   ios ostrace [--list] [--process=<name>] [--pid=<pid>] [--archive] [--archive-file=<file>] [options]  Advanced log streaming using os_trace_relay service. 
+   >                                                                  Use --list to show running processes, --process or --pid to filter logs, --archive to download archived logs
    ios timeformat (24h | 12h | toggle | get) [--force] [options] Sets, or returns the state of the "time format". iOS 11+ only (Use --force to try on older versions).
    ios tunnel ls                                                      List currently started tunnels. Use --enabletun to activate using TUN devices rather than user space network. Requires sudo/admin shells. 
    ios tunnel start [options] [--pair-record-path=<pairrecordpath>] [--enabletun]   Creates a tunnel connection to the device. If the device was not paired with the host yet, device pairing will also be executed.
@@ -647,6 +651,12 @@ The commands work as following:
 		parse, _ := arguments.Bool("--parse")
 
 		runSyslog(device, parse)
+		return
+	}
+
+	b, _ = arguments.Bool("ostrace")
+	if b {
+		runOsTrace(device, arguments)
 		return
 	}
 
@@ -2303,6 +2313,146 @@ func parsedJsonSyslog() func(log string) string {
 		}
 
 		return convertToJSONString(log_entry)
+	}
+}
+
+func runOsTrace(device ios.DeviceEntry, arguments docopt.Opts) {
+	log.Debug("Run OsTrace.")
+	
+	// Check if we're just listing processes
+	listProcesses, _ := arguments.Bool("--list")
+	if listProcesses {
+		conn, err := ostrace.New(device)
+		exitIfError("OsTrace connection failed", err)
+		defer conn.Close()
+		
+		processes, err := conn.GetProcessList()
+		if err != nil {
+			log.Printf("Failed to get process list: %v", err)
+			log.Println("Note: Process list may fail on direct USB connections when response exceeds 16KB.")
+			log.Println("Try using 'ios tunnel start' to enable tunnel connection, or use 'ios ps' command instead.")
+			os.Exit(1)
+		}
+		
+		if JSONdisabled {
+			fmt.Printf("%-6s %s\n", "PID", "NAME")
+			fmt.Println(strings.Repeat("-", 40))
+			for _, proc := range processes {
+				fmt.Printf("%-6d %s\n", proc.PID, proc.Label)
+			}
+		} else {
+			fmt.Println(convertToJSONString(processes))
+		}
+		return
+	}
+	
+	// Check if we're downloading archives
+	archive, _ := arguments.Bool("--archive")
+	if archive {
+		conn, err := ostrace.New(device)
+		exitIfError("OsTrace connection failed", err)
+		defer conn.Close()
+		
+		archiveFile, _ := arguments.String("--archive-file")
+		if archiveFile == "" {
+			archiveFile = "logs.pax"
+		}
+		
+		fmt.Printf("Downloading archived logs...\n")
+		archiveData, err := conn.GetArchivedLogs()
+		exitIfError("Failed to get archived logs", err)
+		
+		file, err := os.Create(archiveFile)
+		exitIfError("Failed to create archive file", err)
+		defer file.Close()
+		
+		_, err = file.Write(archiveData)
+		exitIfError("Failed to write archive file", err)
+		
+		fmt.Printf("Archived logs saved to %s\n", archiveFile)
+		return
+	}
+	
+	// Otherwise, stream logs
+	conn, err := ostrace.New(device)
+	exitIfError("OsTrace connection failed", err)
+	defer conn.Close()
+	
+	// Set up streaming config
+	config := ostrace.StreamConfig{
+		PID: -1,
+	}
+	
+	// Check for process filtering
+	processName, _ := arguments.String("--process")
+	pidStr, _ := arguments.String("--pid")
+	
+	if processName != "" {
+		// Try to find the process by name
+		processes, err := conn.GetProcessList()
+		if err != nil {
+			log.Printf("Warning: Failed to get process list: %v", err)
+			log.Println("Streaming all logs without filtering")
+		} else {
+			found := false
+			for _, proc := range processes {
+				if proc.Label == processName {
+					config.PID = proc.PID
+					found = true
+					log.Printf("Found process '%s' with PID %d", processName, proc.PID)
+					break
+				}
+			}
+			if !found {
+				log.Printf("Warning: Process '%s' not found", processName)
+				log.Println("Streaming all logs without filtering")
+			}
+		}
+	} else if pidStr != "" {
+		pid, err := strconv.Atoi(pidStr)
+		if err == nil {
+			config.PID = pid
+			log.Printf("Filtering logs for PID %d", pid)
+		}
+	}
+	
+	// Start streaming
+	err = conn.StartStreaming(config)
+	exitIfError("Failed to start streaming", err)
+	
+	// Set up signal handling
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	
+	go func() {
+		<-c
+		log.Info("Stopping log stream...")
+		conn.StopStreaming()
+		os.Exit(0)
+	}()
+	
+	// Read and display logs
+	for {
+		entry, err := conn.ReadLogEntry()
+		if err != nil {
+			if err == io.EOF {
+				log.Info("Log stream ended")
+				break
+			}
+			log.Printf("Error reading log entry: %v", err)
+			continue
+		}
+		
+		if JSONdisabled {
+			// Format: [timestamp] process[pid]: message
+			fmt.Printf("[%s] %s[%d]: %s\n", 
+				entry.Timestamp.Format("2006-01-02 15:04:05.000"), 
+				entry.ImageName, 
+				entry.ProcessID, 
+				entry.Message)
+		} else {
+			fmt.Println(convertToJSONString(entry))
+		}
 	}
 }
 
