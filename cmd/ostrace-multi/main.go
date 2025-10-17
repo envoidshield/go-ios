@@ -33,6 +33,8 @@ type StreamConfig struct {
 // MultiConfig represents configuration for multiple streams
 type MultiConfig struct {
 	PyMobileTunnel int            `yaml:"pymobile_tunnel"`
+	RSDHost        string         `yaml:"rsd_host"`
+	RSDPort        int            `yaml:"rsd_port"`
 	MaxWorkers     int            `yaml:"max_workers"`
 	BufferSize     int            `yaml:"buffer_size"`
 	Streams        []StreamConfig `yaml:"streams"`
@@ -90,15 +92,51 @@ streams:
 		os.Exit(1)
 	}
 
-	// Get devices via pymobile tunnel
+	// Get devices via pymobile tunnel or RSD
 	devices := make(map[string]ios.DeviceEntry)
 	for _, stream := range config.Streams {
 		if _, exists := devices[stream.UDID]; !exists {
-			device, err := ios.GetDeviceWithPyMobileTunnel(stream.UDID, config.PyMobileTunnel)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to get device %s: %v\n", stream.UDID, err)
-				os.Exit(1)
+			var device ios.DeviceEntry
+			var err error
+			
+			if config.PyMobileTunnel > 0 {
+				// Use pymobile tunnel
+				device, err = ios.GetDeviceWithPyMobileTunnel(stream.UDID, config.PyMobileTunnel)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to get device %s via pymobile tunnel: %v\n", stream.UDID, err)
+					os.Exit(1)
+				}
+			} else if config.RSDHost != "" {
+				// Use RSD connection
+				rsdService, err := ios.NewWithAddrPort(config.RSDHost, config.RSDPort)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to connect to RSD service: %v\n", err)
+					os.Exit(1)
+				}
+				defer rsdService.Close()
+				
+				// Perform RSD handshake
+				rsdProvider, err := rsdService.Handshake()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to perform RSD handshake: %v\n", err)
+					os.Exit(1)
+				}
+				
+				// Get device with RSD provider
+				device, err = ios.GetDeviceWithAddress(stream.UDID, config.RSDHost, rsdProvider)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to get device %s via RSD: %v\n", stream.UDID, err)
+					os.Exit(1)
+				}
+			} else {
+				// Fall back to regular connection
+				device, err = ios.GetDevice(stream.UDID)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to get device %s: %v\n", stream.UDID, err)
+					os.Exit(1)
+				}
 			}
+			
 			devices[stream.UDID] = device
 		}
 	}

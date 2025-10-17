@@ -15,6 +15,8 @@ func main() {
 	var (
 		udid           = flag.String("udid", "", "Device UDID")
 		pymobileTunnel = flag.Int("pymobile-tunnel", ios.DefaultPyMobileTunnelPort, "Port of pymobiledevice3 tunnel daemon")
+		rsdHost        = flag.String("rsd-host", "", "RSD host address (e.g., IPv6 address)")
+		rsdPort        = flag.Int("rsd-port", 58783, "RSD port (default 58783)")
 		listProcesses  = flag.Bool("list", false, "List all processes")
 		processName    = flag.String("process", "", "Filter logs by process name")
 		pid            = flag.Int("pid", -1, "Filter logs by process ID")
@@ -72,6 +74,33 @@ func main() {
 		}
 		
 		logrus.Infof("Connected to device %s through pymobiledevice3 tunnel", device.Properties.SerialNumber)
+	} else if *rsdHost != "" {
+		logrus.Infof("Connecting through RSD at %s:%d...", *rsdHost, *rsdPort)
+		
+		if *udid == "" {
+			logrus.Fatal("UDID is required when using RSD connection")
+		}
+		
+		// Create RSD service connection
+		rsdService, err := ios.NewWithAddrPort(*rsdHost, *rsdPort)
+		if err != nil {
+			logrus.Fatalf("Failed to connect to RSD service: %v", err)
+		}
+		defer rsdService.Close()
+		
+		// Perform RSD handshake
+		rsdProvider, err := rsdService.Handshake()
+		if err != nil {
+			logrus.Fatalf("Failed to perform RSD handshake: %v", err)
+		}
+		
+		// Get device with RSD provider
+		device, err = ios.GetDeviceWithAddress(*udid, *rsdHost, rsdProvider)
+		if err != nil {
+			logrus.Fatalf("Failed to get device via RSD: %v", err)
+		}
+		
+		logrus.Infof("Connected to device %s through RSD", device.Properties.SerialNumber)
 	} else {
 		// Fall back to regular connection
 		device, err = ios.GetDevice(*udid)

@@ -45,6 +45,8 @@ func main() {
 		stats         = flag.Bool("stats", false, "Show performance statistics")
 		help          = flag.Bool("h", false, "Show help")
 		pymobileTunnel = flag.Int("pymobile-tunnel", 0, "Use pymobiledevice3 tunnel on specified port (e.g., 49151)")
+		rsdHost       = flag.String("rsd-host", "", "RSD host address (e.g., IPv6 address)")
+		rsdPort       = flag.Int("rsd-port", 58783, "RSD port (default 58783)")
 		pid           = flag.Int("pid", -1, "Filter by process ID (device-side filtering)")
 		processName   = flag.String("process", "", "Filter by process name (requires process lookup)")
 	)
@@ -93,6 +95,35 @@ func main() {
 			}
 		}
 		fmt.Fprintf(os.Stderr, "Using device %s via pymobiledevice3 tunnel\n", device.Properties.SerialNumber)
+	} else if *rsdHost != "" {
+		// Use RSD connection
+		if *udid == "" {
+			fmt.Fprintf(os.Stderr, "UDID is required when using RSD connection\n")
+			os.Exit(1)
+		}
+		
+		// Create RSD service connection
+		rsdService, err := ios.NewWithAddrPort(*rsdHost, *rsdPort)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to connect to RSD service: %v\n", err)
+			os.Exit(1)
+		}
+		defer rsdService.Close()
+		
+		// Perform RSD handshake
+		rsdProvider, err := rsdService.Handshake()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to perform RSD handshake: %v\n", err)
+			os.Exit(1)
+		}
+		
+		// Get device with RSD provider
+		device, err = ios.GetDeviceWithAddress(*udid, *rsdHost, rsdProvider)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to get device via RSD: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Using device %s via RSD (%s:%d)\n", device.Properties.SerialNumber, *rsdHost, *rsdPort)
 	} else {
 		// Use regular connection
 		device, err = ios.GetDevice(*udid)
