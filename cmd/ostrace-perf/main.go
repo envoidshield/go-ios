@@ -77,7 +77,7 @@ func main() {
 	pingInterval = time.Duration(*pingSeconds) * time.Second
 	if pingInterval > 0 {
 		lastPingTime.Store(time.Time{}) // Initialize with zero time
-		fmt.Fprintf(os.Stderr, "Ping enabled: will send ping every %d seconds when logs are received\n", *pingSeconds)
+		fmt.Fprintf(os.Stdout, "Ping enabled: will send ping every %d seconds when logs are received\n", *pingSeconds)
 	}
 
 	// Get device
