@@ -97,10 +97,51 @@ func (c *OsTraceCodec) ReadStreamChunk(r io.Reader) ([]byte, error) {
 	return data, nil
 }
 
+// ReadStreamChunkWithDeadline reads a streaming log chunk with deadline support
+// This version should be called by Connection methods that manage deadlines
+func (c *OsTraceCodec) ReadStreamChunkWithDeadline(r io.Reader, updateDeadline func() error) ([]byte, error) {
+	// Update deadline before reading
+	if err := updateDeadline(); err != nil {
+		return nil, fmt.Errorf("failed to set read deadline: %w", err)
+	}
+	
+	// Get a small buffer from pool for header
+	headerBufPtr := smallBufferPool.Get().(*[]byte)
+	headerBuf := (*headerBufPtr)[:5] // 1 status + 4 length
+	defer smallBufferPool.Put(headerBufPtr)
+	
+	// Read status byte and length in one go
+	if _, err := io.ReadFull(r, headerBuf); err != nil {
+		return nil, err
+	}
+
+	if headerBuf[0] != 0x02 {
+		return nil, fmt.Errorf("unexpected status byte: 0x%02x (expected 0x02)", headerBuf[0])
+	}
+
+	// Read 4-byte little-endian length
+	length := binary.LittleEndian.Uint32(headerBuf[1:5])
+
+	// Update deadline again before reading potentially large data
+	if err := updateDeadline(); err != nil {
+		return nil, fmt.Errorf("failed to set read deadline: %w", err)
+	}
+
+	// Allocate exact size needed (can't use pool here as size varies)
+	data := make([]byte, length)
+	if _, err := io.ReadFull(r, data); err != nil {
+		return nil, fmt.Errorf("failed to read chunk data: %w", err)
+	}
+
+	return data, nil
+}
+
 // Connection represents a connection to the os_trace_relay service
 type Connection struct {
-	deviceConn ios.DeviceConnectionInterface
-	codec      *OsTraceCodec
+	deviceConn   ios.DeviceConnectionInterface
+	codec        *OsTraceCodec
+	readTimeout  time.Duration // Optional read timeout for blocking operations
+	readDeadline time.Time     // Last set read deadline
 }
 
 // New creates a new os_trace_relay connection
@@ -109,6 +150,30 @@ func New(device ios.DeviceEntry) (*Connection, error) {
 		return NewWithShimConnection(device)
 	}
 	return NewWithUsbmuxdConnection(device)
+}
+
+// SetReadTimeout sets a timeout for read operations
+// If timeout is 0, no timeout is set (blocking reads)
+// This helps detect stalled connections by preventing indefinite blocking
+func (c *Connection) SetReadTimeout(timeout time.Duration) {
+	c.readTimeout = timeout
+}
+
+// updateReadDeadline updates the read deadline on the underlying connection
+// This is called before each read operation when readTimeout is set
+func (c *Connection) updateReadDeadline() error {
+	if c.readTimeout == 0 {
+		return nil // No timeout configured
+	}
+	
+	conn := c.deviceConn.Conn()
+	if conn == nil {
+		return nil // Connection doesn't support deadlines
+	}
+	
+	deadline := time.Now().Add(c.readTimeout)
+	c.readDeadline = deadline
+	return conn.SetReadDeadline(deadline)
 }
 
 // NewWithUsbmuxdConnection connects to os_trace_relay via usbmuxd
@@ -379,8 +444,16 @@ func (c *Connection) StartStreaming(config StreamConfig) error {
 
 // ReadLogEntry reads and parses a single log entry from the binary stream
 func (c *Connection) ReadLogEntry() (*LogEntry, error) {
-	// Read stream chunk (0x02 status + 4-byte little-endian length + data)
-	chunkBytes, err := c.codec.ReadStreamChunk(c.deviceConn.Reader())
+	// Read stream chunk with deadline support if configured
+	var chunkBytes []byte
+	var err error
+	
+	if c.readTimeout > 0 {
+		chunkBytes, err = c.codec.ReadStreamChunkWithDeadline(c.deviceConn.Reader(), c.updateReadDeadline)
+	} else {
+		chunkBytes, err = c.codec.ReadStreamChunk(c.deviceConn.Reader())
+	}
+	
 	if err != nil {
 		if err == io.EOF {
 			return nil, err

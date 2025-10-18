@@ -35,6 +35,10 @@ var (
 	// Ping tracking
 	lastPingTime atomic.Value // stores time.Time
 	pingInterval time.Duration
+	
+	// Connection health monitoring
+	lastLogReceived atomic.Value // stores time.Time
+	readTimeout     time.Duration
 )
 
 func main() {
@@ -54,6 +58,9 @@ func main() {
 		pid           = flag.Int("pid", -1, "Filter by process ID (device-side filtering)")
 		processName   = flag.String("process", "", "Filter by process name (requires process lookup)")
 		pingSeconds   = flag.Int("ping-interval", 5, "Send ping when logs are received but not matching filter (seconds, 0 to disable)")
+		watchdogSeconds = flag.Int("watchdog", 30, "Watchdog timeout: exit if no logs received for N seconds (0 to disable)")
+		readTimeoutSeconds = flag.Int("read-timeout", 0, "Read timeout: fail read operations after N seconds (0 to disable, prevents indefinite blocking)")
+		diagnostics   = flag.Bool("diagnostics", false, "Enable diagnostic mode with detailed connection state logging")
 	)
 	flag.Parse()
 
@@ -65,6 +72,7 @@ func main() {
 		fmt.Println("- High-performance JSON encoding (jsoniter)")
 		fmt.Println("- Parallel processing")
 		fmt.Println("- Large output buffering")
+		fmt.Println("- Connection health monitoring with watchdog")
 		fmt.Println("\nUsage:")
 		flag.PrintDefaults()
 		os.Exit(0)
@@ -77,7 +85,19 @@ func main() {
 	pingInterval = time.Duration(*pingSeconds) * time.Second
 	if pingInterval > 0 {
 		lastPingTime.Store(time.Time{}) // Initialize with zero time
-		fmt.Fprintf(os.Stdout, "Ping enabled: will send ping every %d seconds when logs are received\n", *pingSeconds)
+		fmt.Fprintf(os.Stderr, "Ping enabled: will send ping every %d seconds when logs are received\n", *pingSeconds)
+	}
+	
+	// Initialize watchdog
+	readTimeout = time.Duration(*watchdogSeconds) * time.Second
+	if readTimeout > 0 {
+		lastLogReceived.Store(time.Now())
+		fmt.Fprintf(os.Stderr, "Watchdog enabled: will exit if no logs received for %d seconds\n", *watchdogSeconds)
+	}
+	
+	// Enable diagnostics if requested
+	if *diagnostics {
+		fmt.Fprintf(os.Stderr, "Diagnostics mode enabled: detailed connection state logging active\n")
 	}
 
 	// Get device
@@ -152,6 +172,13 @@ func main() {
 		os.Exit(1)
 	}
 	defer conn.Close()
+	
+	// Set read timeout on connection if configured
+	if *readTimeoutSeconds > 0 {
+		connReadTimeout := time.Duration(*readTimeoutSeconds) * time.Second
+		conn.SetReadTimeout(connReadTimeout)
+		fmt.Fprintf(os.Stderr, "Read timeout set: %v (prevents indefinite blocking on stalled connections)\n", connReadTimeout)
+	}
 
 	// List processes if requested
 	if *list {
@@ -247,18 +274,70 @@ func main() {
 	
 	// Start output flusher
 	go outputFlusher()
+	
+	// Start watchdog if enabled
+	watchdogChan := make(chan struct{})
+	if readTimeout > 0 {
+		go watchdogMonitor(watchdogChan)
+	}
 
 	// Main reading loop
+	readErrorChan := make(chan error, 1)
 	go func() {
+		consecutiveErrors := 0
+		lastDiagnostic := time.Now()
+		
 		for {
+			// Diagnostic logging
+			if *diagnostics && time.Since(lastDiagnostic) >= 10*time.Second {
+				fmt.Fprintf(os.Stderr, "[DIAG] Reading logs... Total processed: %d, Errors: %d\n", 
+					atomic.LoadUint64(&logsProcessed), consecutiveErrors)
+				lastDiagnostic = time.Now()
+			}
+			
 			entry, err := conn.FastReadLogEntry()
 			if err != nil {
+				consecutiveErrors++
+				
 				if err == io.EOF {
+					fmt.Fprintf(os.Stderr, "[DIAG] Connection closed (EOF) after %d consecutive errors\n", consecutiveErrors)
+					readErrorChan <- io.EOF
 					close(entryChan)
 					return
 				}
-				// Skip errors and continue
+				
+				// Check if it's a timeout error
+				if netErr, ok := err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
+					fmt.Fprintf(os.Stderr, "Error: Read timeout after %v - connection appears stalled\n", time.Duration(*readTimeoutSeconds)*time.Second)
+					readErrorChan <- fmt.Errorf("read timeout: %w", err)
+					close(entryChan)
+					return
+				}
+				
+				// Log the error to stderr and continue
+				fmt.Fprintf(os.Stderr, "Warning: Failed to read log entry (error #%d): %v\n", consecutiveErrors, err)
+				
+				// If too many consecutive errors, bail out
+				if consecutiveErrors > 100 {
+					fmt.Fprintf(os.Stderr, "Error: Too many consecutive read errors (%d), giving up\n", consecutiveErrors)
+					readErrorChan <- fmt.Errorf("too many consecutive errors: %w", err)
+					close(entryChan)
+					return
+				}
 				continue
+			}
+			
+			// Reset error counter on successful read
+			if consecutiveErrors > 0 {
+				if *diagnostics {
+					fmt.Fprintf(os.Stderr, "[DIAG] Recovered after %d errors\n", consecutiveErrors)
+				}
+				consecutiveErrors = 0
+			}
+			
+			// Update last log received time for watchdog
+			if readTimeout > 0 {
+				lastLogReceived.Store(time.Now())
 			}
 			
 			// Send to workers
@@ -267,13 +346,28 @@ func main() {
 				atomic.AddUint64(&logsProcessed, 1)
 			default:
 				// Buffer full, drop log
+				if *diagnostics {
+					fmt.Fprintf(os.Stderr, "[DIAG] Warning: Buffer full, dropping log entry\n")
+				}
 				ostrace.PutLogEntry(entry)
 			}
 		}
 	}()
 
-	// Wait for signal
-	<-sigChan
+	// Wait for signal, EOF, or watchdog timeout
+	select {
+	case <-sigChan:
+		fmt.Fprintf(os.Stderr, "\nReceived interrupt signal, shutting down...\n")
+	case err := <-readErrorChan:
+		if err == io.EOF {
+			fmt.Fprintf(os.Stderr, "\nConnection closed by device (EOF)\n")
+		} else {
+			fmt.Fprintf(os.Stderr, "\nRead error: %v\n", err)
+		}
+	case <-watchdogChan:
+		fmt.Fprintf(os.Stderr, "\nWatchdog timeout: No logs received for %v\n", readTimeout)
+		fmt.Fprintf(os.Stderr, "Connection may be stalled. Exiting...\n")
+	}
 	
 	// Cleanup
 	conn.StopStreaming()
@@ -381,6 +475,30 @@ func outputFlusher() {
 	}
 }
 
+func watchdogMonitor(timeoutChan chan<- struct{}) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	
+	for range ticker.C {
+		lastLog := lastLogReceived.Load().(time.Time)
+		timeSinceLastLog := time.Since(lastLog)
+		
+		if timeSinceLastLog >= readTimeout {
+			// Timeout reached - signal main goroutine
+			close(timeoutChan)
+			return
+		}
+		
+		// Log warning if approaching timeout (80% threshold)
+		warningThreshold := time.Duration(float64(readTimeout) * 0.8)
+		if timeSinceLastLog >= warningThreshold {
+			fmt.Fprintf(os.Stderr, "Warning: No logs received for %v (timeout in %v)\n", 
+				timeSinceLastLog.Round(time.Second), 
+				(readTimeout - timeSinceLastLog).Round(time.Second))
+		}
+	}
+}
+
 func statsReporter() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -395,8 +513,16 @@ func statsReporter() {
 		logsPerSec := (currentLogs - lastLogs) / 5
 		mbPerSec := float64(currentBytes-lastBytes) / (5 * 1024 * 1024)
 		
-		fmt.Fprintf(os.Stderr, "Stats: %d logs/sec, %.2f MB/sec, Total: %d logs\n", 
-			logsPerSec, mbPerSec, currentLogs)
+		// Add connection health info
+		healthInfo := ""
+		if readTimeout > 0 {
+			lastLog := lastLogReceived.Load().(time.Time)
+			timeSinceLastLog := time.Since(lastLog)
+			healthInfo = fmt.Sprintf(", Last log: %v ago", timeSinceLastLog.Round(time.Second))
+		}
+		
+		fmt.Fprintf(os.Stderr, "Stats: %d logs/sec, %.2f MB/sec, Total: %d logs%s\n", 
+			logsPerSec, mbPerSec, currentLogs, healthInfo)
 		
 		lastLogs = currentLogs
 		lastBytes = currentBytes

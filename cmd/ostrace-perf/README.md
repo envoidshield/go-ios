@@ -12,6 +12,7 @@ High-performance iOS system log streaming tool with zero-copy parsing, object po
 - **Backend PID filtering** for device-side filtering (reduces bandwidth)
 - **Advanced client-side filtering** with YAML configuration
 - **Multi-worker processing** for parallel log handling
+- **Connection stall detection** with multiple detection methods (watchdog, read timeouts, diagnostics)
 
 ### When to use ostrace-perf vs regular ostrace
 
@@ -86,6 +87,10 @@ ostrace-perf -pymobile-tunnel 49151 -list
 | `-workers` | int | NumCPU() | Number of worker goroutines for parallel processing |
 | `-buffer` | int | 1000 | Log entry buffer size |
 | `-stats` | bool | false | Show performance statistics |
+| `-ping-interval` | int | 5 | Send ping when logs received but not matching filter (seconds, 0 to disable) |
+| `-watchdog` | int | 30 | Watchdog timeout: exit if no logs received for N seconds (0 to disable) |
+| `-read-timeout` | int | 0 | Read timeout: fail read operations after N seconds (0 to disable, prevents indefinite blocking) |
+| `-diagnostics` | bool | false | Enable diagnostic mode with detailed connection state logging |
 | `-h` | bool | false | Show help |
 
 ## Filtering Guide
@@ -280,10 +285,14 @@ ostrace-perf -pymobile-tunnel 49151 -pid 35 -filter-config examples/filters/spri
 - Use `-list` to see available processes
 - Use `-pid` directly if you know the PID
 
-### Logs stop streaming
+### Logs stop streaming / Process hangs
+- **Quick fix**: Use `--watchdog 30` to auto-exit after 30 seconds of no logs
+- **Better fix**: Use `--read-timeout 20` to detect stalled connections immediately
+- **Best fix**: Use both `--read-timeout 20 --watchdog 30 --diagnostics` for full visibility
 - Device may have disconnected from tunnel
 - Restart pymobiledevice3 tunnel
 - Check device USB connection
+- See [STALL_DETECTION.md](STALL_DETECTION.md) for detailed troubleshooting
 
 ### No output with filters
 - Filters may be too restrictive
@@ -312,8 +321,31 @@ ostrace-perf -pymobile-tunnel 49151 -pid 35 -filter-config examples/filters/spri
 }
 ```
 
+## Connection Reliability
+
+ostrace-perf includes multiple methods to detect and handle stalled connections:
+
+### Quick Start
+```bash
+# Production-ready configuration
+ostrace-perf --read-timeout 30 --watchdog 60 --stats -pymobile-tunnel 49151 -json
+
+# Development/debugging configuration
+ostrace-perf --diagnostics --watchdog 30 --stats -pymobile-tunnel 49151 -json
+```
+
+### Available Detection Methods
+
+1. **Read Timeout** (`--read-timeout`): Prevents indefinite blocking at the network level
+2. **Watchdog Timer** (`--watchdog`): Detects when no logs are received for a period
+3. **Diagnostic Mode** (`--diagnostics`): Detailed connection state logging
+4. **Ping Interval** (`--ping-interval`): Sends periodic pings when logs don't match filters
+
+See [STALL_DETECTION.md](STALL_DETECTION.md) for comprehensive documentation on detecting and handling connection stalls.
+
 ## See Also
 
+- [`STALL_DETECTION.md`](STALL_DETECTION.md) - Connection stall detection and troubleshooting
 - [`ios/ostrace/FILTERING.md`](../../ios/ostrace/FILTERING.md) - Detailed filtering documentation
 - [`examples/filters/`](../../examples/filters/) - Sample filter configurations
 - [`cmd/ostrace-multi/`](../ostrace-multi/) - IoT multi-stream version for multiple devices
