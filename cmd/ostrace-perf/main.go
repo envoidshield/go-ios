@@ -488,14 +488,6 @@ func watchdogMonitor(timeoutChan chan<- struct{}) {
 			close(timeoutChan)
 			return
 		}
-		
-		// Log warning if approaching timeout (80% threshold)
-		warningThreshold := time.Duration(float64(readTimeout) * 0.8)
-		if timeSinceLastLog >= warningThreshold {
-			fmt.Fprintf(os.Stderr, "Warning: No logs received for %v (timeout in %v)\n", 
-				timeSinceLastLog.Round(time.Second), 
-				(readTimeout - timeSinceLastLog).Round(time.Second))
-		}
 	}
 }
 
