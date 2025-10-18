@@ -31,6 +31,10 @@ var (
 	// Output buffer with writer
 	outputBuffer = bufio.NewWriterSize(os.Stdout, 64*1024) // 64KB buffer
 	outputMutex  sync.Mutex
+	
+	// Ping tracking
+	lastPingTime atomic.Value // stores time.Time
+	pingInterval time.Duration
 )
 
 func main() {
@@ -49,6 +53,7 @@ func main() {
 		rsdPort       = flag.Int("rsd-port", 58783, "RSD port (default 58783)")
 		pid           = flag.Int("pid", -1, "Filter by process ID (device-side filtering)")
 		processName   = flag.String("process", "", "Filter by process name (requires process lookup)")
+		pingSeconds   = flag.Int("ping-interval", 5, "Send ping when logs are received but not matching filter (seconds, 0 to disable)")
 	)
 	flag.Parse()
 
@@ -67,6 +72,13 @@ func main() {
 
 	// Set GOMAXPROCS for maximum performance
 	runtime.GOMAXPROCS(runtime.NumCPU())
+
+	// Initialize ping interval
+	pingInterval = time.Duration(*pingSeconds) * time.Second
+	if pingInterval > 0 {
+		lastPingTime.Store(time.Time{}) // Initialize with zero time
+		fmt.Fprintf(os.Stderr, "Ping enabled: will send ping every %d seconds when logs are received\n", *pingSeconds)
+	}
 
 	// Get device
 	var device ios.DeviceEntry
@@ -287,13 +299,28 @@ func worker(entryChan <-chan *ostrace.LogEntry, filterConfig *ostrace.FilterConf
 	localBuf := make([]byte, 0, 4096)
 	
 	for entry := range entryChan {
+		// Check if we should send a ping (log received but may not match filter)
+		shouldSendPing := false
+		if pingInterval > 0 {
+			lastPing := lastPingTime.Load().(time.Time)
+			if time.Since(lastPing) >= pingInterval {
+				shouldSendPing = true
+			}
+		}
+		
 		// Apply filter
-		if filterConfig != nil && !ostrace.EvaluateFilters(entry, filterConfig) {
+		matchesFilter := filterConfig == nil || ostrace.EvaluateFilters(entry, filterConfig)
+		
+		if !matchesFilter {
+			// Log doesn't match filter, but send ping if needed
+			if shouldSendPing {
+				sendPing(jsonOutput)
+			}
 			ostrace.PutLogEntry(entry)
 			continue
 		}
 		
-		// Format output
+		// Log matches filter - format and output
 		localBuf = localBuf[:0]
 		if jsonOutput {
 			// High-performance JSON encoding
@@ -319,6 +346,28 @@ func worker(entryChan <-chan *ostrace.LogEntry, filterConfig *ostrace.FilterConf
 		// Return entry to pool
 		ostrace.PutLogEntry(entry)
 	}
+}
+
+// sendPing sends a ping message and updates the last ping time
+func sendPing(jsonOutput bool) {
+	// Update last ping time atomically
+	now := time.Now()
+	lastPingTime.Store(now)
+	
+	// Format ping message
+	var pingMsg []byte
+	if jsonOutput {
+		pingMsg = []byte(`{"type":"ping","timestamp":"` + now.Format(time.RFC3339Nano) + `"}` + "\n")
+	} else {
+		pingMsg = []byte("PING\n")
+	}
+	
+	// Write ping to output
+	outputMutex.Lock()
+	outputBuffer.Write(pingMsg)
+	outputMutex.Unlock()
+	
+	atomic.AddUint64(&bytesWritten, uint64(len(pingMsg)))
 }
 
 func outputFlusher() {
