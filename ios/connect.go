@@ -88,6 +88,12 @@ func (muxConn *UsbMuxConnection) ConnectLockdown(deviceID int) (*LockDownConnect
 }
 
 func ConnectToService(device DeviceEntry, serviceName string) (DeviceConnectionInterface, error) {
+	// If device supports RSD/tunnel, use shim service connection
+	if device.SupportsRsd() {
+		return ConnectToShimService(device, serviceName)
+	}
+	
+	// Fall back to usbmuxd for legacy connections
 	startServiceResponse, err := StartService(device, serviceName)
 	if err != nil {
 		return nil, err
@@ -203,6 +209,11 @@ func (muxConn *UsbMuxConnection) connectWithStartServiceResponse(deviceID int, s
 }
 
 func ConnectLockdownWithSession(device DeviceEntry) (*LockDownConnection, error) {
+	// If device supports RSD/tunnel, we can't use usbmuxd for lockdown
+	if device.SupportsRsd() {
+		return nil, fmt.Errorf("ConnectLockdownWithSession: RSD/tunnel devices don't support usbmuxd lockdown connections")
+	}
+	
 	muxConnection, err := NewUsbMuxConnectionSimple()
 	if err != nil {
 		return nil, fmt.Errorf("USBMuxConnection failed with: %v", err)

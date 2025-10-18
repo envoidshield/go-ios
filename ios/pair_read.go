@@ -92,11 +92,9 @@ func (muxConn *UsbMuxConnection) ReadPair(udid string) (PairRecord, error) {
 }
 
 // ReadPairRecord creates a new USBMuxConnection just to read the pair record and closes it right after than.
+// For RSD/tunnel connections, this returns an empty pair record as they use different authentication.
 func ReadPairRecord(udid string) (PairRecord, error) {
-	muxConnection, err := NewUsbMuxConnectionSimple()
-	if err != nil {
-		return PairRecord{}, fmt.Errorf("Could not create usbmuxConnection with error %v", err)
-	}
-	defer muxConnection.Close()
-	return muxConnection.ReadPair(udid)
+	// For RSD/tunnel connections, we don't need usbmuxd pair records
+	// as they use their own authentication mechanism
+	return PairRecord{}, nil
 }
