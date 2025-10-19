@@ -290,14 +290,16 @@ func initializeXpcConnection(h *http.HttpConnection) error {
 // automatically. Otherwise it will try a operating system level TUN device.
 func ConnectTUNDevice(remoteIp string, port int, d DeviceEntry) (*net.TCPConn, error) {
 	if !d.UserspaceTUN {
-		return connectTUN(remoteIp, port)
+        return connectTUN(remoteIp, port)
 	}
 
-	addr, _ := net.ResolveTCPAddr("tcp4", fmt.Sprintf("%s:%d", d.UserspaceTUNHost, d.UserspaceTUNPort))
-	conn, err := net.DialTCP("tcp", nil, addr)
+    addr, _ := net.ResolveTCPAddr("tcp4", fmt.Sprintf("%s:%d", d.UserspaceTUNHost, d.UserspaceTUNPort))
+    dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 1 * time.Second}
+    nc, err := dialer.Dial("tcp4", addr.String())
 	if err != nil {
 		return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to dial: %w", err)
 	}
+    conn := nc.(*net.TCPConn)
 	err = conn.SetKeepAlive(true)
 	if err != nil {
 		return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive: %w", err)
@@ -319,10 +321,12 @@ func connectTUN(address string, port int) (*net.TCPConn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ConnectToHttp2WithAddr: failed to resolve address: %w", err)
 	}
-	conn, err := net.DialTCP("tcp", nil, addr)
+    dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 1 * time.Second}
+    nc, err := dialer.Dial("tcp6", addr.String())
 	if err != nil {
 		return nil, fmt.Errorf("ConnectToHttp2WithAddr: failed to dial: %w", err)
 	}
+    conn := nc.(*net.TCPConn)
 	err = conn.SetKeepAlive(true)
 	if err != nil {
 		return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive: %w", err)

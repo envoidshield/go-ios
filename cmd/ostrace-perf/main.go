@@ -143,7 +143,8 @@ func main() {
 		defer rsdService.Close()
 		
 		// Perform RSD handshake
-		rsdProvider, err := rsdService.Handshake()
+		// Use a conservative timeout to avoid indefinite blocking
+		rsdProvider, err := rsdService.HandshakeWithTimeout(15 * time.Second)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to perform RSD handshake: %v\n", err)
 			os.Exit(1)
@@ -252,6 +253,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to start streaming: %v\n", err)
 		os.Exit(1)
 	}
+	// Reset watchdog timer at the moment streaming actually starts
+	if readTimeout > 0 {
+		lastLogReceived.Store(time.Now())
+	}
 
 	// Create worker pool
 	entryChan := make(chan *ostrace.LogEntry, *bufferSize)
@@ -302,7 +307,6 @@ func main() {
 				if err == io.EOF {
 					fmt.Fprintf(os.Stderr, "[DIAG] Connection closed (EOF) after %d consecutive errors\n", consecutiveErrors)
 					readErrorChan <- io.EOF
-					close(entryChan)
 					return
 				}
 				
@@ -310,7 +314,6 @@ func main() {
 				if netErr, ok := err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
 					fmt.Fprintf(os.Stderr, "Error: Read timeout after %v - connection appears stalled\n", time.Duration(*readTimeoutSeconds)*time.Second)
 					readErrorChan <- fmt.Errorf("read timeout: %w", err)
-					close(entryChan)
 					return
 				}
 				

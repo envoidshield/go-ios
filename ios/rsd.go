@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"time"
 
 	"github.com/danielpaulus/go-ios/ios/http"
 	"github.com/danielpaulus/go-ios/ios/xpc"
@@ -238,4 +239,31 @@ func (s RsdService) Handshake() (RsdHandshakeResponse, error) {
 	} else {
 		return RsdHandshakeResponse{}, fmt.Errorf("Handshake: unknown response")
 	}
+}
+
+// HandshakeWithTimeout performs Handshake but enforces a timeout.
+// If the timeout elapses, the underlying connection is closed to unblock any pending reads.
+func (s RsdService) HandshakeWithTimeout(timeout time.Duration) (RsdHandshakeResponse, error) {
+    if timeout <= 0 {
+        return s.Handshake()
+    }
+
+    type result struct {
+        resp RsdHandshakeResponse
+        err  error
+    }
+    done := make(chan result, 1)
+    go func() {
+        r, err := s.Handshake()
+        done <- result{resp: r, err: err}
+    }()
+
+    select {
+    case r := <-done:
+        return r.resp, r.err
+    case <-time.After(timeout):
+        // Close the connection to abort the in-flight handshake read
+        _ = s.Close()
+        return RsdHandshakeResponse{}, fmt.Errorf("Handshake: timeout after %v", timeout)
+    }
 }
