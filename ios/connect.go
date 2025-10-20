@@ -128,7 +128,8 @@ func ConnectToShimService(device DeviceEntry, service string) (DeviceConnectionI
 	}
 	err = RsdCheckin(conn)
 	if err != nil {
-		return nil, err
+        _ = conn.Close()
+        return nil, err
 	}
 	return NewDeviceConnectionWithRWC(conn), nil
 }
@@ -141,14 +142,15 @@ func ConnectToXpcServiceTunnelIface(device DeviceEntry, serviceName string) (*xp
 	}
 	port := device.Rsd.GetPort(serviceName)
 
-	conn, err := ConnectTUNDevice(device.Address, port, device)
+    conn, err := ConnectTUNDevice(device.Address, port, device)
 	if err != nil {
 		return nil, fmt.Errorf("ConnectToHttp2: failed to dial: %w", err)
 	}
 
 	h, err := http.NewHttpConnection(conn)
 	if err != nil {
-		return nil, fmt.Errorf("ConnectToXpcServiceTunnelIface: failed to connect to http2: %w", err)
+        _ = conn.Close()
+        return nil, fmt.Errorf("ConnectToXpcServiceTunnelIface: failed to connect to http2: %w", err)
 	}
 	return CreateXpcConnection(h)
 }
@@ -302,17 +304,23 @@ func ConnectTUNDevice(remoteIp string, port int, d DeviceEntry) (*net.TCPConn, e
     conn := nc.(*net.TCPConn)
 	err = conn.SetKeepAlive(true)
 	if err != nil {
-		return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive: %w", err)
+        _ = conn.Close()
+        return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive: %w", err)
 	}
 	err = conn.SetKeepAlivePeriod(1 * time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive period: %w", err)
+        _ = conn.Close()
+        return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive period: %w", err)
 	}
-	_, err = conn.Write(net.ParseIP(remoteIp).To16())
+    _, err = conn.Write(net.ParseIP(remoteIp).To16())
 	portBytes := make([]byte, 4)
 	binary.LittleEndian.PutUint32(portBytes, uint32(port))
 	_, err1 := conn.Write(portBytes)
-	return conn, errors.Join(err, err1)
+    if err != nil || err1 != nil {
+        _ = conn.Close()
+        return nil, errors.Join(err, err1)
+    }
+    return conn, nil
 }
 
 // connect to a operating system level TUN device
@@ -329,11 +337,13 @@ func connectTUN(address string, port int) (*net.TCPConn, error) {
     conn := nc.(*net.TCPConn)
 	err = conn.SetKeepAlive(true)
 	if err != nil {
-		return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive: %w", err)
+        _ = conn.Close()
+        return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive: %w", err)
 	}
 	err = conn.SetKeepAlivePeriod(1 * time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive period: %w", err)
+        _ = conn.Close()
+        return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive period: %w", err)
 	}
 
 	return conn, nil

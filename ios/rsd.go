@@ -188,11 +188,13 @@ func NewWithAddrPortDevice(addr string, port int, d DeviceEntry) (RsdService, er
 func newRsdServiceFromTcpConn(conn *net.TCPConn) (RsdService, error) {
 	h, err := http.NewHttpConnection(conn)
 	if err != nil {
+        _ = conn.Close()
 		return RsdService{}, fmt.Errorf("newRsdServiceFromTcpConn: failed to connect to http2: %w", err)
 	}
 
 	x, err := CreateXpcConnection(h)
 	if err != nil {
+        _ = h.Close()
 		return RsdService{}, fmt.Errorf("newRsdServiceFromTcpConn: failed to create xpc connection: %w", err)
 	}
 
