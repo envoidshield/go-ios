@@ -39,7 +39,24 @@ var (
 	// Connection health monitoring
 	lastLogReceived atomic.Value // stores time.Time
 	readTimeout     time.Duration
+	
+	// Non-blocking stderr channel to prevent reader goroutine blocking
+	// Critical: reader must never block on stderr or socket reads will stall
+	stderrChan = make(chan string, 1000)
+	stderrDone = make(chan struct{})
 )
+
+// logStderr writes to stderr asynchronously to prevent blocking the reader goroutine
+// If channel is full, message is dropped (better than blocking socket reads)
+func logStderr(format string, args ...interface{}) {
+	select {
+	case stderrChan <- fmt.Sprintf(format, args...):
+		// Message queued successfully
+	default:
+		// Channel full - drop message to avoid blocking
+		// This is intentional: socket reads are more important than stderr messages
+	}
+}
 
 func main() {
 	var (
@@ -80,6 +97,26 @@ func main() {
 
 	// Set GOMAXPROCS for maximum performance
 	runtime.GOMAXPROCS(runtime.NumCPU())
+
+	// Start async stderr writer to prevent reader goroutine from blocking
+	go func() {
+		for {
+			select {
+			case msg := <-stderrChan:
+				fmt.Fprint(os.Stderr, msg)
+			case <-stderrDone:
+				// Drain remaining messages
+				for {
+					select {
+					case msg := <-stderrChan:
+						fmt.Fprint(os.Stderr, msg)
+					default:
+						return
+					}
+				}
+			}
+		}
+	}()
 
 	// Initialize ping interval
 	pingInterval = time.Duration(*pingSeconds) * time.Second
@@ -293,9 +330,9 @@ func main() {
 		lastDiagnostic := time.Now()
 		
 		for {
-			// Diagnostic logging
+			// Diagnostic logging (non-blocking)
 			if *diagnostics && time.Since(lastDiagnostic) >= 10*time.Second {
-				fmt.Fprintf(os.Stderr, "[DIAG] Reading logs... Total processed: %d, Errors: %d\n", 
+				logStderr("[DIAG] Reading logs... Total processed: %d, Errors: %d\n", 
 					atomic.LoadUint64(&logsProcessed), consecutiveErrors)
 				lastDiagnostic = time.Now()
 			}
@@ -305,24 +342,26 @@ func main() {
 				consecutiveErrors++
 				
 				if err == io.EOF {
-					fmt.Fprintf(os.Stderr, "[DIAG] Connection closed (EOF) after %d consecutive errors\n", consecutiveErrors)
+					logStderr("[DIAG] Connection closed (EOF) after %d consecutive errors\n", consecutiveErrors)
 					readErrorChan <- io.EOF
 					return
 				}
 				
 				// Check if it's a timeout error
 				if netErr, ok := err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
-					fmt.Fprintf(os.Stderr, "Error: Read timeout after %v - connection appears stalled\n", time.Duration(*readTimeoutSeconds)*time.Second)
+					logStderr("Error: Read timeout after %v - connection appears stalled\n", time.Duration(*readTimeoutSeconds)*time.Second)
 					readErrorChan <- fmt.Errorf("read timeout: %w", err)
 					return
 				}
 				
-				// Log the error to stderr and continue
-				fmt.Fprintf(os.Stderr, "Warning: Failed to read log entry (error #%d): %v\n", consecutiveErrors, err)
+				// Log the error (non-blocking, rate-limited to every 10th error)
+				if consecutiveErrors % 10 == 1 {
+					logStderr("Warning: Failed to read log entry (error #%d): %v\n", consecutiveErrors, err)
+				}
 				
 				// If too many consecutive errors, bail out
 				if consecutiveErrors > 100 {
-					fmt.Fprintf(os.Stderr, "Error: Too many consecutive read errors (%d), giving up\n", consecutiveErrors)
+					logStderr("Error: Too many consecutive read errors (%d), giving up\n", consecutiveErrors)
 					readErrorChan <- fmt.Errorf("too many consecutive errors: %w", err)
 					close(entryChan)
 					return
@@ -333,7 +372,7 @@ func main() {
 			// Reset error counter on successful read
 			if consecutiveErrors > 0 {
 				if *diagnostics {
-					fmt.Fprintf(os.Stderr, "[DIAG] Recovered after %d errors\n", consecutiveErrors)
+					logStderr("[DIAG] Recovered after %d errors\n", consecutiveErrors)
 				}
 				consecutiveErrors = 0
 			}
@@ -350,7 +389,7 @@ func main() {
 			default:
 				// Buffer full, drop log
 				if *diagnostics {
-					fmt.Fprintf(os.Stderr, "[DIAG] Warning: Buffer full, dropping log entry\n")
+					logStderr("[DIAG] Warning: Buffer full, dropping log entry\n")
 				}
 				ostrace.PutLogEntry(entry)
 			}
@@ -387,6 +426,10 @@ func main() {
 			atomic.LoadUint64(&logsProcessed),
 			atomic.LoadUint64(&bytesWritten)/(1024*1024))
 	}
+	
+	// Signal stderr writer to drain and exit
+	close(stderrDone)
+	time.Sleep(100 * time.Millisecond) // Give it time to drain
 }
 
 func worker(entryChan <-chan *ostrace.LogEntry, filterConfig *ostrace.FilterConfig, jsonOutput bool, wg *sync.WaitGroup) {
