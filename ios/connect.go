@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/danielpaulus/go-ios/ios/http"
@@ -302,6 +303,17 @@ func ConnectTUNDevice(remoteIp string, port int, d DeviceEntry) (*net.TCPConn, e
 		return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to dial: %w", err)
 	}
     conn := nc.(*net.TCPConn)
+	
+	// Set SO_LINGER to 0 to immediately RST on close
+	// This prevents sockets from lingering in CLOSE_WAIT if process is SIGKILL'd
+	// Critical for preventing tunnel exhaustion from orphaned connections
+	rawConn, err := conn.SyscallConn()
+	if err == nil {
+		rawConn.Control(func(fd uintptr) {
+			syscall.SetsockoptLinger(int(fd), syscall.SOL_SOCKET, syscall.SO_LINGER, &syscall.Linger{Onoff: 1, Linger: 0})
+		})
+	}
+	
 	err = conn.SetKeepAlive(true)
 	if err != nil {
         _ = conn.Close()
@@ -335,6 +347,17 @@ func connectTUN(address string, port int) (*net.TCPConn, error) {
 		return nil, fmt.Errorf("ConnectToHttp2WithAddr: failed to dial: %w", err)
 	}
     conn := nc.(*net.TCPConn)
+	
+	// Set SO_LINGER to 0 to immediately RST on close
+	// This prevents sockets from lingering in CLOSE_WAIT if process is SIGKILL'd
+	// Critical for preventing tunnel exhaustion from orphaned connections
+	rawConn, err := conn.SyscallConn()
+	if err == nil {
+		rawConn.Control(func(fd uintptr) {
+			syscall.SetsockoptLinger(int(fd), syscall.SOL_SOCKET, syscall.SO_LINGER, &syscall.Linger{Onoff: 1, Linger: 0})
+		})
+	}
+	
 	err = conn.SetKeepAlive(true)
 	if err != nil {
         _ = conn.Close()
