@@ -28,10 +28,6 @@ var (
 	logsProcessed uint64
 	bytesWritten  uint64
 	
-	// Output buffer with writer
-	outputBuffer = bufio.NewWriterSize(os.Stdout, 64*1024) // 64KB buffer
-	outputMutex  sync.Mutex
-	
 	// Ping tracking
 	lastPingTime atomic.Value // stores time.Time
 	pingInterval time.Duration
@@ -45,6 +41,11 @@ var (
 	stderrChan = make(chan string, 1000)
 	stderrDone = make(chan struct{})
 )
+
+// formattedLog represents a formatted log entry ready for output
+type formattedLog struct {
+	data []byte
+}
 
 // logStderr writes to stderr asynchronously to prevent blocking the reader goroutine
 // If channel is full, message is dropped (better than blocking socket reads)
@@ -297,12 +298,17 @@ func main() {
 
 	// Create worker pool
 	entryChan := make(chan *ostrace.LogEntry, *bufferSize)
+	outputChan := make(chan formattedLog, *bufferSize*2) // Larger output buffer
+	outputDone := make(chan struct{})
 	var wg sync.WaitGroup
+
+	// Start dedicated output writer (eliminates mutex contention!)
+	go dedicatedWriter(outputChan, outputDone, *stats)
 
 	// Start workers
 	for i := 0; i < *workers; i++ {
 		wg.Add(1)
-		go worker(entryChan, filterConfig, *jsonOutput, &wg)
+		go worker(entryChan, outputChan, filterConfig, *jsonOutput, &wg)
 	}
 
 	// Start stats reporter if enabled
@@ -313,9 +319,6 @@ func main() {
 	// Handle signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	
-	// Start output flusher
-	go outputFlusher()
 	
 	// Start watchdog if enabled
 	watchdogChan := make(chan struct{})
@@ -416,10 +419,10 @@ func main() {
 	close(entryChan)
 	wg.Wait()
 	
-	// Final flush
-	outputMutex.Lock()
-	outputBuffer.Flush()
-	outputMutex.Unlock()
+	// Signal output writer to drain and finish
+	close(outputChan)
+	close(outputDone)
+	time.Sleep(200 * time.Millisecond) // Give output writer time to drain
 	
 	if *stats {
 		fmt.Fprintf(os.Stderr, "\nFinal stats: %d logs processed, %d MB written\n", 
@@ -432,10 +435,10 @@ func main() {
 	time.Sleep(100 * time.Millisecond) // Give it time to drain
 }
 
-func worker(entryChan <-chan *ostrace.LogEntry, filterConfig *ostrace.FilterConfig, jsonOutput bool, wg *sync.WaitGroup) {
+func worker(entryChan <-chan *ostrace.LogEntry, outputChan chan<- formattedLog, filterConfig *ostrace.FilterConfig, jsonOutput bool, wg *sync.WaitGroup) {
 	defer wg.Done()
 	
-	// Local buffer to reduce lock contention
+	// Local buffer for formatting (reused across entries)
 	localBuf := make([]byte, 0, 4096)
 	
 	for entry := range entryChan {
@@ -454,7 +457,7 @@ func worker(entryChan <-chan *ostrace.LogEntry, filterConfig *ostrace.FilterConf
 		if !matchesFilter {
 			// Log doesn't match filter, but send ping if needed
 			if shouldSendPing {
-				sendPing(jsonOutput)
+				sendPing(outputChan, jsonOutput)
 			}
 			ostrace.PutLogEntry(entry)
 			continue
@@ -476,12 +479,11 @@ func worker(entryChan <-chan *ostrace.LogEntry, filterConfig *ostrace.FilterConf
 				entry.Message)
 		}
 		
-		// Write to output buffer
-		outputMutex.Lock()
-		outputBuffer.Write(localBuf)
-		outputMutex.Unlock()
-		
-		atomic.AddUint64(&bytesWritten, uint64(len(localBuf)))
+		// Send to output channel (NO LOCK! - eliminates mutex contention)
+		// Make a copy since localBuf is reused
+		outputData := make([]byte, len(localBuf))
+		copy(outputData, localBuf)
+		outputChan <- formattedLog{data: outputData}
 		
 		// Return entry to pool
 		ostrace.PutLogEntry(entry)
@@ -489,7 +491,7 @@ func worker(entryChan <-chan *ostrace.LogEntry, filterConfig *ostrace.FilterConf
 }
 
 // sendPing sends a ping message and updates the last ping time
-func sendPing(jsonOutput bool) {
+func sendPing(outputChan chan<- formattedLog, jsonOutput bool) {
 	// Update last ping time atomically
 	now := time.Now()
 	lastPingTime.Store(now)
@@ -502,22 +504,43 @@ func sendPing(jsonOutput bool) {
 		pingMsg = []byte("PING\n")
 	}
 	
-	// Write ping to output
-	outputMutex.Lock()
-	outputBuffer.Write(pingMsg)
-	outputMutex.Unlock()
-	
-	atomic.AddUint64(&bytesWritten, uint64(len(pingMsg)))
+	// Send ping to output channel (NO LOCK!)
+	outputChan <- formattedLog{data: pingMsg}
 }
 
-func outputFlusher() {
-	ticker := time.NewTicker(100 * time.Millisecond)
+// dedicatedWriter is a single goroutine that drains the output channel
+// This eliminates all mutex contention - only ONE writer, no locks needed!
+func dedicatedWriter(outputChan <-chan formattedLog, doneChan <-chan struct{}, enableStats bool) {
+	buf := bufio.NewWriterSize(os.Stdout, 256*1024) // Larger buffer than before
+	ticker := time.NewTicker(500 * time.Millisecond) // Less frequent flushing
 	defer ticker.Stop()
+	defer buf.Flush()
 	
-	for range ticker.C {
-		outputMutex.Lock()
-		outputBuffer.Flush()
-		outputMutex.Unlock()
+	for {
+		select {
+		case log, ok := <-outputChan:
+			if !ok {
+				// Channel closed, drain remaining and exit
+				return
+			}
+			n, _ := buf.Write(log.data)
+			atomic.AddUint64(&bytesWritten, uint64(n))
+			
+		case <-ticker.C:
+			buf.Flush()
+			
+		case <-doneChan:
+			// Drain any remaining logs
+			for {
+				select {
+				case log := <-outputChan:
+					buf.Write(log.data)
+				default:
+					buf.Flush()
+					return
+				}
+			}
+		}
 	}
 }
 

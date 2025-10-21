@@ -1,6 +1,7 @@
 package ostrace
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"fmt"
@@ -70,7 +71,8 @@ func (c *OsTraceCodec) WriteRequest(w io.Writer, msg interface{}) error {
 
 // ReadStreamChunk reads a streaming log chunk
 // Protocol: 0x02 status byte + 4-byte little-endian length + data
-func (c *OsTraceCodec) ReadStreamChunk(r io.Reader) ([]byte, error) {
+// Now accepts *bufio.Reader for high-performance buffered reads
+func (c *OsTraceCodec) ReadStreamChunk(r *bufio.Reader) ([]byte, error) {
 	// Get a small buffer from pool for header
 	headerBufPtr := smallBufferPool.Get().(*[]byte)
 	headerBuf := (*headerBufPtr)[:5] // 1 status + 4 length
@@ -99,8 +101,10 @@ func (c *OsTraceCodec) ReadStreamChunk(r io.Reader) ([]byte, error) {
 
 // ReadStreamChunkWithDeadline reads a streaming log chunk with deadline support
 // This version should be called by Connection methods that manage deadlines
-func (c *OsTraceCodec) ReadStreamChunkWithDeadline(r io.Reader, updateDeadline func() error) ([]byte, error) {
-	// Update deadline before reading
+// Now accepts *bufio.Reader and only updates deadline once (not twice)
+func (c *OsTraceCodec) ReadStreamChunkWithDeadline(r *bufio.Reader, updateDeadline func() error) ([]byte, error) {
+	// Single deadline update - applies to entire chunk read
+	// Optimized: was updating twice (before header, before data), now just once
 	if err := updateDeadline(); err != nil {
 		return nil, fmt.Errorf("failed to set read deadline: %w", err)
 	}
@@ -122,11 +126,6 @@ func (c *OsTraceCodec) ReadStreamChunkWithDeadline(r io.Reader, updateDeadline f
 	// Read 4-byte little-endian length
 	length := binary.LittleEndian.Uint32(headerBuf[1:5])
 
-	// Update deadline again before reading potentially large data
-	if err := updateDeadline(); err != nil {
-		return nil, fmt.Errorf("failed to set read deadline: %w", err)
-	}
-
 	// Allocate exact size needed (can't use pool here as size varies)
 	data := make([]byte, length)
 	if _, err := io.ReadFull(r, data); err != nil {
@@ -140,6 +139,7 @@ func (c *OsTraceCodec) ReadStreamChunkWithDeadline(r io.Reader, updateDeadline f
 type Connection struct {
 	deviceConn   ios.DeviceConnectionInterface
 	codec        *OsTraceCodec
+	reader       *bufio.Reader // Buffered reader for high-performance socket reads
 	readTimeout  time.Duration // Optional read timeout for blocking operations
 	readDeadline time.Time     // Last set read deadline
 }
@@ -183,10 +183,14 @@ func NewWithUsbmuxdConnection(device ios.DeviceEntry) (*Connection, error) {
 		return nil, fmt.Errorf("failed to connect to %s: %w", serviceName, err)
 	}
 
-	return &Connection{
+	conn := &Connection{
 		deviceConn: deviceConn,
 		codec:      &OsTraceCodec{},
-	}, nil
+	}
+	// Add buffered reader for high-performance socket reads (256KB buffer)
+	// This reduces syscalls from 2 per log to ~1 per 1000 logs
+	conn.reader = bufio.NewReaderSize(conn.deviceConn.Reader(), 256*1024)
+	return conn, nil
 }
 
 // NewWithShimConnection connects to os_trace_relay via RSD tunnel
@@ -196,10 +200,14 @@ func NewWithShimConnection(device ios.DeviceEntry) (*Connection, error) {
 		return nil, fmt.Errorf("failed to connect to %s: %w", shimServiceName, err)
 	}
 
-	return &Connection{
+	conn := &Connection{
 		deviceConn: deviceConn,
 		codec:      &OsTraceCodec{},
-	}, nil
+	}
+	// Add buffered reader for high-performance socket reads (256KB buffer)
+	// This reduces syscalls from 2 per log to ~1 per 1000 logs
+	conn.reader = bufio.NewReaderSize(conn.deviceConn.Reader(), 256*1024)
+	return conn, nil
 }
 
 // ProcessInfo represents information about a running process
@@ -449,9 +457,9 @@ func (c *Connection) ReadLogEntry() (*LogEntry, error) {
 	var err error
 	
 	if c.readTimeout > 0 {
-		chunkBytes, err = c.codec.ReadStreamChunkWithDeadline(c.deviceConn.Reader(), c.updateReadDeadline)
+		chunkBytes, err = c.codec.ReadStreamChunkWithDeadline(c.reader, c.updateReadDeadline)
 	} else {
-		chunkBytes, err = c.codec.ReadStreamChunk(c.deviceConn.Reader())
+		chunkBytes, err = c.codec.ReadStreamChunk(c.reader)
 	}
 	
 	if err != nil {

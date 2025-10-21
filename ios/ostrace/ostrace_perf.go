@@ -73,13 +73,14 @@ func unsafeString(b []byte) string {
 // The returned LogEntry should be processed immediately and then returned to the pool
 func (c *Connection) FastReadLogEntry() (*LogEntry, error) {
 	// Read the chunk with deadline support if configured
+	// Now using buffered reader for high-performance socket reads
 	var chunkBytes []byte
 	var err error
 	
 	if c.readTimeout > 0 {
-		chunkBytes, err = c.codec.ReadStreamChunkWithDeadline(c.deviceConn.Reader(), c.updateReadDeadline)
+		chunkBytes, err = c.codec.ReadStreamChunkWithDeadline(c.reader, c.updateReadDeadline)
 	} else {
-		chunkBytes, err = c.codec.ReadStreamChunk(c.deviceConn.Reader())
+		chunkBytes, err = c.codec.ReadStreamChunk(c.reader)
 	}
 	
 	if err != nil {

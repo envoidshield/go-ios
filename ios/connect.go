@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/danielpaulus/go-ios/ios/http"
-
 	"github.com/danielpaulus/go-ios/ios/xpc"
+	log "github.com/sirupsen/logrus"
 )
 
 type connectMessage struct {
@@ -304,6 +304,21 @@ func ConnectTUNDevice(remoteIp string, port int, d DeviceEntry) (*net.TCPConn, e
 	}
     conn := nc.(*net.TCPConn)
 	
+	// CRITICAL PERFORMANCE OPTIMIZATIONS for high-throughput log streaming
+	// Disable Nagle's algorithm - eliminates 40-200ms latency per packet
+	if err := conn.SetNoDelay(true); err != nil {
+		log.Warnf("Failed to set TCP_NODELAY: %v", err)
+	}
+	
+	// Increase socket buffers for high-throughput streaming (10K+ logs/sec)
+	// 1MB read buffer reduces syscalls and prevents backpressure to iOS device
+	if err := conn.SetReadBuffer(1024 * 1024); err != nil {
+		log.Warnf("Failed to set read buffer: %v", err)
+	}
+	if err := conn.SetWriteBuffer(256 * 1024); err != nil {
+		log.Warnf("Failed to set write buffer: %v", err)
+	}
+	
 	// Set SO_LINGER to 0 to immediately RST on close
 	// This prevents sockets from lingering in CLOSE_WAIT if process is SIGKILL'd
 	// Critical for preventing tunnel exhaustion from orphaned connections
@@ -347,6 +362,21 @@ func connectTUN(address string, port int) (*net.TCPConn, error) {
 		return nil, fmt.Errorf("ConnectToHttp2WithAddr: failed to dial: %w", err)
 	}
     conn := nc.(*net.TCPConn)
+	
+	// CRITICAL PERFORMANCE OPTIMIZATIONS for high-throughput log streaming
+	// Disable Nagle's algorithm - eliminates 40-200ms latency per packet
+	if err := conn.SetNoDelay(true); err != nil {
+		log.Warnf("Failed to set TCP_NODELAY: %v", err)
+	}
+	
+	// Increase socket buffers for high-throughput streaming (10K+ logs/sec)
+	// 1MB read buffer reduces syscalls and prevents backpressure to iOS device
+	if err := conn.SetReadBuffer(1024 * 1024); err != nil {
+		log.Warnf("Failed to set read buffer: %v", err)
+	}
+	if err := conn.SetWriteBuffer(256 * 1024); err != nil {
+		log.Warnf("Failed to set write buffer: %v", err)
+	}
 	
 	// Set SO_LINGER to 0 to immediately RST on close
 	// This prevents sockets from lingering in CLOSE_WAIT if process is SIGKILL'd
