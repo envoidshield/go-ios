@@ -13,6 +13,16 @@ import (
 
 // High-performance optimizations for massive log processing
 
+// Pre-allocated level strings to avoid array creation on every log entry
+// Index by level byte value (sparse array, most entries empty)
+var levelStrings = [18]string{
+	0x00: "default",
+	0x01: "info",
+	0x02: "debug",
+	0x10: "error",
+	0x11: "fault",
+}
+
 // LogEntryPool provides zero-allocation log entry reuse
 var logEntryPool = sync.Pool{
 	New: func() interface{} {
@@ -27,15 +37,8 @@ func GetLogEntry() *LogEntry {
 
 // PutLogEntry returns a LogEntry to the pool for reuse
 func PutLogEntry(entry *LogEntry) {
-	// Clear the entry
-	entry.Timestamp = entry.Timestamp.Truncate(0)
-	entry.ProcessID = 0
-	entry.Level = ""
-	entry.ImageName = ""
-	entry.Message = ""
-	entry.Filename = ""
-	entry.Category = ""
-	entry.Subsystem = ""
+	// No need to clear fields - they will all be overwritten on next use
+	// Skipping clears saves 6 string assignments per log entry
 	logEntryPool.Put(entry)
 }
 
@@ -65,6 +68,10 @@ func PutStringBuffer(sb *StringBuffer) {
 
 // unsafeString converts bytes to string without allocation
 // ONLY use for read-only strings that won't be modified
+// SAFETY: chunkBytes is allocated fresh in ReadStreamChunk (ostrace.go:94)
+// so these strings are safe as long as the LogEntry lifetime doesn't
+// exceed the scope where chunkBytes is referenced.
+// Current usage is safe: LogEntry is used immediately then returned to pool.
 func unsafeString(b []byte) string {
 	return *(*string)(unsafe.Pointer(&b))
 }
@@ -111,19 +118,11 @@ func (c *Connection) FastReadLogEntry() (*LogEntry, error) {
 	
 	entry.Timestamp = time.Unix(int64(timestampSec), int64(timestampUS)*1000)
 	
-	// Level
-	levelMap := [...]string{
-		0x00: "default",
-		0x01: "info",
-		0x02: "debug",
-		0x10: "error",
-		0x11: "fault",
-	}
-	
+	// Level - use pre-allocated level strings (no allocation per log entry)
 	level := chunkBytes[offset]
 	offset += 1
-	if int(level) < len(levelMap) {
-		entry.Level = levelMap[level]
+	if int(level) < len(levelStrings) && levelStrings[level] != "" {
+		entry.Level = levelStrings[level]
 	} else {
 		entry.Level = "unknown"
 	}
