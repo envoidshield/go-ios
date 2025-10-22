@@ -301,6 +301,11 @@ func main() {
 	outputChan := make(chan formattedLog, *bufferSize*2) // Larger output buffer
 	outputDone := make(chan struct{})
 	var wg sync.WaitGroup
+	
+	// Use sync.Once to prevent double-close panics
+	var closeEntryChanOnce sync.Once
+	var closeOutputChanOnce sync.Once
+	var closeOutputDoneOnce sync.Once
 
 	// Start dedicated output writer (eliminates mutex contention!)
 	go dedicatedWriter(outputChan, outputDone, *stats)
@@ -366,7 +371,7 @@ func main() {
 				if consecutiveErrors > 100 {
 					logStderr("Error: Too many consecutive read errors (%d), giving up\n", consecutiveErrors)
 					readErrorChan <- fmt.Errorf("too many consecutive errors: %w", err)
-					close(entryChan)
+					closeEntryChanOnce.Do(func() { close(entryChan) })
 					return
 				}
 				continue
@@ -400,28 +405,33 @@ func main() {
 	}()
 
 	// Wait for signal, EOF, or watchdog timeout
+	exitCode := 0
 	select {
 	case <-sigChan:
 		fmt.Fprintf(os.Stderr, "\nReceived interrupt signal, shutting down...\n")
+		exitCode = 0 // Normal shutdown via signal
 	case err := <-readErrorChan:
 		if err == io.EOF {
 			fmt.Fprintf(os.Stderr, "\nConnection closed by device (EOF)\n")
+			exitCode = 0 // Normal EOF is not an error
 		} else {
 			fmt.Fprintf(os.Stderr, "\nRead error: %v\n", err)
+			exitCode = 1 // Read errors are abnormal
 		}
 	case <-watchdogChan:
 		fmt.Fprintf(os.Stderr, "\nWatchdog timeout: No logs received for %v\n", readTimeout)
 		fmt.Fprintf(os.Stderr, "Connection may be stalled. Exiting...\n")
+		exitCode = 2 // Watchdog timeout indicates connection issue
 	}
 	
-	// Cleanup
+	// Cleanup (graceful shutdown regardless of exit reason)
 	conn.StopStreaming()
-	close(entryChan)
+	closeEntryChanOnce.Do(func() { close(entryChan) })
 	wg.Wait()
 	
 	// Signal output writer to drain and finish
-	close(outputChan)
-	close(outputDone)
+	closeOutputChanOnce.Do(func() { close(outputChan) })
+	closeOutputDoneOnce.Do(func() { close(outputDone) })
 	time.Sleep(200 * time.Millisecond) // Give output writer time to drain
 	
 	if *stats {
@@ -433,6 +443,9 @@ func main() {
 	// Signal stderr writer to drain and exit
 	close(stderrDone)
 	time.Sleep(100 * time.Millisecond) // Give it time to drain
+	
+	// Exit with appropriate code
+	os.Exit(exitCode)
 }
 
 func worker(entryChan <-chan *ostrace.LogEntry, outputChan chan<- formattedLog, filterConfig *ostrace.FilterConfig, jsonOutput bool, wg *sync.WaitGroup) {
