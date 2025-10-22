@@ -73,38 +73,49 @@ func main() {
 	config := ostrace.StreamConfig{PID: -1}
 	if err := conn.StartStreaming(config); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start streaming: %v\n", err)
+		conn.Close()
 		os.Exit(1)
 	}
 
 	// Handle signals
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	done := make(chan bool)
+
+	// Stream logs in goroutine
 	go func() {
-		<-c
-		conn.StopStreaming()
-		os.Exit(0)
+		for {
+			entry, err := conn.ReadLogEntry()
+			if err != nil {
+				if err == io.EOF {
+					done <- true
+					return
+				}
+				continue
+			}
+
+			// Apply filter
+			if filterConfig != nil && !ostrace.EvaluateFilters(entry, filterConfig) {
+				continue
+			}
+
+			// Simple output
+			fmt.Printf("[%s] %s[%d]: %s\n",
+				entry.Timestamp.Format("15:04:05.000"),
+				entry.ImageName,
+				entry.ProcessID,
+				entry.Message)
+		}
 	}()
 
-	// Stream logs
-	for {
-		entry, err := conn.ReadLogEntry()
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			continue
-		}
-
-		// Apply filter
-		if filterConfig != nil && !ostrace.EvaluateFilters(entry, filterConfig) {
-			continue
-		}
-
-		// Simple output
-		fmt.Printf("[%s] %s[%d]: %s\n",
-			entry.Timestamp.Format("15:04:05.000"),
-			entry.ImageName,
-			entry.ProcessID,
-			entry.Message)
+	// Wait for signal or EOF
+	select {
+	case <-sigChan:
+		fmt.Fprintf(os.Stderr, "\nInterrupted, shutting down...\n")
+	case <-done:
+		// EOF received
 	}
+
+	// Proper cleanup (defer will also run)
+	conn.StopStreaming()
 }

@@ -38,7 +38,8 @@ func main() {
 	// Get device
 	device, err := ios.GetDevice(*udid)
 	if err != nil {
-		log.Fatalf("Failed to get device: %v", err)
+		log.Errorf("Failed to get device: %v", err)
+		os.Exit(1)
 	}
 
 	log.Infof("Connected to device: %s", device.Properties.SerialNumber)
@@ -46,7 +47,8 @@ func main() {
 	// Create connection
 	conn, err := ostrace.New(device)
 	if err != nil {
-		log.Fatalf("Failed to create ostrace connection: %v", err)
+		log.Errorf("Failed to create ostrace connection: %v", err)
+		os.Exit(1)
 	}
 	defer conn.Close()
 
@@ -86,19 +88,22 @@ func main() {
 		})
 		
 		if err != nil {
-			log.Fatalf("\nFailed to get archived logs: %v", err)
+			log.Errorf("\nFailed to get archived logs: %v", err)
+			return
 		}
 
 		// Save to file
 		file, err := os.Create(*archiveFile)
 		if err != nil {
-			log.Fatalf("\nFailed to create file: %v", err)
+			log.Errorf("\nFailed to create file: %v", err)
+			return
 		}
 		defer file.Close()
 
 		_, err = file.Write(archiveData)
 		if err != nil {
-			log.Fatalf("\nFailed to write to file: %v", err)
+			log.Errorf("\nFailed to write to file: %v", err)
+			return
 		}
 
 		duration := time.Since(startTime)
@@ -153,7 +158,8 @@ func main() {
 	// Start streaming
 	err = conn.StartStreaming(config)
 	if err != nil {
-		log.Fatalf("Failed to start streaming: %v", err)
+		log.Errorf("Failed to start streaming: %v", err)
+		return
 	}
 	defer conn.StopStreaming()
 

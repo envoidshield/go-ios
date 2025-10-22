@@ -185,6 +185,7 @@ func main() {
 		rsdProvider, err := rsdService.HandshakeWithTimeout(15 * time.Second)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to perform RSD handshake: %v\n", err)
+			rsdService.Close()
 			os.Exit(1)
 		}
 		
@@ -192,6 +193,7 @@ func main() {
 		device, err = ios.GetDeviceWithAddress(*udid, *rsdHost, rsdProvider)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to get device via RSD: %v\n", err)
+			rsdService.Close()
 			os.Exit(1)
 		}
 		fmt.Fprintf(os.Stderr, "Using device %s via RSD (%s:%d)\n", device.Properties.SerialNumber, *rsdHost, *rsdPort)
@@ -224,6 +226,7 @@ func main() {
 		processes, err := conn.GetProcessList()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to get process list: %v\n", err)
+			conn.Close()
 			os.Exit(1)
 		}
 		for _, p := range processes {
@@ -264,6 +267,7 @@ func main() {
 					for _, p := range processes {
 						fmt.Fprintf(os.Stderr, "  %d: %s\n", p.PID, p.Label)
 					}
+					conn.Close()
 					os.Exit(1)
 				}
 			}
@@ -278,6 +282,7 @@ func main() {
 		filterConfig, err = ostrace.LoadFilterConfig(*filterFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to load filter: %v\n", err)
+			conn.Close()
 			os.Exit(1)
 		}
 	}
@@ -289,6 +294,7 @@ func main() {
 	}
 	if err := conn.StartStreaming(config); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start streaming: %v\n", err)
+		conn.Close()
 		os.Exit(1)
 	}
 	// Reset watchdog timer at the moment streaming actually starts
