@@ -59,6 +59,13 @@ func logStderr(format string, args ...interface{}) {
 	}
 }
 
+// logStartupProgress logs startup progress when diagnostics enabled
+func logStartupProgress(phase string, diagnostics bool) {
+	if diagnostics {
+		fmt.Fprintf(os.Stderr, "[STARTUP] %s\n", phase)
+	}
+}
+
 func main() {
 	var (
 		udid          = flag.String("udid", "", "Device UDID")
@@ -79,6 +86,7 @@ func main() {
 		watchdogSeconds = flag.Int("watchdog", 30, "Watchdog timeout: exit if no logs received for N seconds (0 to disable)")
 		readTimeoutSeconds = flag.Int("read-timeout", 0, "Read timeout: fail read operations after N seconds (0 to disable, prevents indefinite blocking)")
 		diagnostics   = flag.Bool("diagnostics", false, "Enable diagnostic mode with detailed connection state logging")
+		startupTimeoutSeconds = flag.Int("startup-timeout", 30, "Startup timeout: fail if streaming doesn't start within N seconds (default 30, 0 to disable)")
 	)
 	flag.Parse()
 
@@ -91,6 +99,7 @@ func main() {
 		fmt.Println("- Parallel processing")
 		fmt.Println("- Large output buffering")
 		fmt.Println("- Connection health monitoring with watchdog")
+		fmt.Println("- Startup timeout protection (default 30s)")
 		fmt.Println("\nUsage:")
 		flag.PrintDefaults()
 		os.Exit(0)
@@ -138,11 +147,38 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Diagnostics mode enabled: detailed connection state logging active\n")
 	}
 
+	// Setup startup timeout monitoring with clean exit
+	startupTimeout := time.Duration(*startupTimeoutSeconds) * time.Second
+	startupCancelChan := make(chan struct{})
+	
+	if startupTimeout > 0 {
+		fmt.Fprintf(os.Stderr, "Startup timeout: %v (prevents hanging during initialization)\n", startupTimeout)
+		
+		// Start startup watchdog
+		go func() {
+			timer := time.NewTimer(startupTimeout)
+			defer timer.Stop()
+			
+			select {
+			case <-timer.C:
+				// Timeout reached - clean exit
+				fmt.Fprintf(os.Stderr, "\nERROR: Startup timeout after %v\n", startupTimeout)
+				fmt.Fprintf(os.Stderr, "Possible causes: device not responding, connection issues, service unresponsive\n")
+				os.Exit(3) // Exit code 3 for startup timeout
+			case <-startupCancelChan:
+				// Startup completed successfully
+				return
+			}
+		}()
+	}
+
 	// Get device
 	var device ios.DeviceEntry
 	var err error
 	
 	if *pymobileTunnel > 0 {
+		logStartupProgress("Connecting via pymobiledevice3 tunnel", *diagnostics)
+		
 		// Use pymobiledevice3 tunnel
 		if *udid == "" {
 			// Get first device from tunnel
@@ -166,6 +202,8 @@ func main() {
 		}
 		fmt.Fprintf(os.Stderr, "Using device %s via pymobiledevice3 tunnel\n", device.Properties.SerialNumber)
 	} else if *rsdHost != "" {
+		logStartupProgress("Connecting via RSD", *diagnostics)
+		
 		// Use RSD connection
 		if *udid == "" {
 			fmt.Fprintf(os.Stderr, "UDID is required when using RSD connection\n")
@@ -179,6 +217,8 @@ func main() {
 			os.Exit(1)
 		}
 		defer rsdService.Close()
+		
+		logStartupProgress("Performing RSD handshake", *diagnostics)
 		
 		// Perform RSD handshake
 		// Use a conservative timeout to avoid indefinite blocking
@@ -198,6 +238,8 @@ func main() {
 		}
 		fmt.Fprintf(os.Stderr, "Using device %s via RSD (%s:%d)\n", device.Properties.SerialNumber, *rsdHost, *rsdPort)
 	} else {
+		logStartupProgress("Connecting to device", *diagnostics)
+		
 		// Use regular connection
 		device, err = ios.GetDevice(*udid)
 		if err != nil {
@@ -206,6 +248,8 @@ func main() {
 		}
 	}
 
+	logStartupProgress("Connecting to ostrace service", *diagnostics)
+	
 	// Connect to ostrace
 	conn, err := ostrace.New(device)
 	if err != nil {
@@ -223,6 +267,8 @@ func main() {
 
 	// List processes if requested
 	if *list {
+		logStartupProgress("Retrieving process list", *diagnostics)
+		
 		processes, err := conn.GetProcessList()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to get process list: %v\n", err)
@@ -238,6 +284,8 @@ func main() {
 	// Handle process name to PID conversion
 	targetPID := *pid
 	if *processName != "" && targetPID == -1 {
+		logStartupProgress("Looking up process by name", *diagnostics)
+		
 		fmt.Fprintf(os.Stderr, "Looking up process '%s'...\n", *processName)
 		
 		// Create a separate connection for process lookup to avoid interfering with streaming
@@ -279,6 +327,8 @@ func main() {
 	if *filter != "" {
 		filterConfig = ostrace.CreateSimpleFilter(*filter)
 	} else if *filterFile != "" {
+		logStartupProgress("Loading filter configuration", *diagnostics)
+		
 		filterConfig, err = ostrace.LoadFilterConfig(*filterFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to load filter: %v\n", err)
@@ -287,6 +337,8 @@ func main() {
 		}
 	}
 
+	logStartupProgress("Starting log streaming", *diagnostics)
+	
 	// Start streaming with device-side PID filtering
 	config := ostrace.StreamConfig{PID: targetPID}
 	if targetPID != -1 {
@@ -297,6 +349,15 @@ func main() {
 		conn.Close()
 		os.Exit(1)
 	}
+	
+	// CRITICAL: Streaming started - cancel startup timeout
+	if startupTimeout > 0 {
+		close(startupCancelChan)
+		if *diagnostics {
+			fmt.Fprintf(os.Stderr, "[STARTUP] Streaming started, timeout canceled\n")
+		}
+	}
+	
 	// Reset watchdog timer at the moment streaming actually starts
 	if readTimeout > 0 {
 		lastLogReceived.Store(time.Now())

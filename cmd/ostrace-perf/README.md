@@ -88,6 +88,7 @@ ostrace-perf -pymobile-tunnel 49151 -list
 | `-buffer` | int | 1000 | Log entry buffer size |
 | `-stats` | bool | false | Show performance statistics |
 | `-ping-interval` | int | 5 | Send ping when logs received but not matching filter (seconds, 0 to disable) |
+| `-startup-timeout` | int | 30 | **Startup timeout: fail if streaming doesn't start within N seconds (default 30, 0 to disable)** |
 | `-watchdog` | int | 30 | Watchdog timeout: exit if no logs received for N seconds (0 to disable) |
 | `-read-timeout` | int | 0 | Read timeout: fail read operations after N seconds (0 to disable, prevents indefinite blocking) |
 | `-diagnostics` | bool | false | Enable diagnostic mode with detailed connection state logging |
@@ -285,6 +286,13 @@ ostrace-perf -pymobile-tunnel 49151 -pid 35 -filter-config examples/filters/spri
 - Use `-list` to see available processes
 - Use `-pid` directly if you know the PID
 
+### Process hangs before streaming starts (NEW)
+- **Automatic protection**: Enabled by default with 30-second timeout
+- **Customize timeout**: Use `--startup-timeout 60` for slower connections
+- **Disable protection**: Use `--startup-timeout 0` (not recommended)
+- **Diagnostics**: Use `--diagnostics` to see which phase it's stuck in
+- See [STARTUP_TIMEOUT.md](STARTUP_TIMEOUT.md) for detailed troubleshooting
+
 ### Logs stop streaming / Process hangs
 - **Quick fix**: Use `--watchdog 30` to auto-exit after 30 seconds of no logs
 - **Better fix**: Use `--read-timeout 20` to detect stalled connections immediately
@@ -327,25 +335,27 @@ ostrace-perf includes multiple methods to detect and handle stalled connections:
 
 ### Quick Start
 ```bash
-# Production-ready configuration
-ostrace-perf --read-timeout 30 --watchdog 60 --stats -pymobile-tunnel 49151 -json
+# Production-ready configuration (all timeouts enabled)
+ostrace-perf --startup-timeout 30 --read-timeout 30 --watchdog 60 --stats -pymobile-tunnel 49151 -json
 
 # Development/debugging configuration
-ostrace-perf --diagnostics --watchdog 30 --stats -pymobile-tunnel 49151 -json
+ostrace-perf --diagnostics --startup-timeout 30 --watchdog 30 --stats -pymobile-tunnel 49151 -json
 ```
 
 ### Available Detection Methods
 
-1. **Read Timeout** (`--read-timeout`): Prevents indefinite blocking at the network level
-2. **Watchdog Timer** (`--watchdog`): Detects when no logs are received for a period
-3. **Diagnostic Mode** (`--diagnostics`): Detailed connection state logging
-4. **Ping Interval** (`--ping-interval`): Sends periodic pings when logs don't match filters
+1. **Startup Timeout** (`--startup-timeout`, **DEFAULT: 30s**): Prevents hanging during initialization (NEW)
+2. **Read Timeout** (`--read-timeout`): Prevents indefinite blocking at the network level
+3. **Watchdog Timer** (`--watchdog`): Detects when no logs are received for a period
+4. **Diagnostic Mode** (`--diagnostics`): Detailed connection state logging
+5. **Ping Interval** (`--ping-interval`): Sends periodic pings when logs don't match filters
 
 See [STALL_DETECTION.md](STALL_DETECTION.md) for comprehensive documentation on detecting and handling connection stalls.
 
 ## See Also
 
-- [`STALL_DETECTION.md`](STALL_DETECTION.md) - Connection stall detection and troubleshooting
+- [`STARTUP_TIMEOUT.md`](STARTUP_TIMEOUT.md) - **NEW:** Startup timeout protection (prevents hanging before streaming)
+- [`STALL_DETECTION.md`](STALL_DETECTION.md) - Connection stall detection and troubleshooting (during streaming)
 - [`ios/ostrace/FILTERING.md`](../../ios/ostrace/FILTERING.md) - Detailed filtering documentation
 - [`examples/filters/`](../../examples/filters/) - Sample filter configurations
 - [`cmd/ostrace-multi/`](../ostrace-multi/) - IoT multi-stream version for multiple devices
