@@ -542,34 +542,83 @@ func worker(entryChan <-chan *ostrace.LogEntry, outputChan chan<- formattedLog, 
 }
 
 // isSimpleFilter determines if a filter is "simple" enough to evaluate in the reader
-// Simple filters: single field CONTAINS/EQUALS checks (fast string operations)
-// Complex filters: REGEX, AND/OR logic, multiple conditions (need parallel workers)
+// Simple filters: fast string operations that won't block socket reads
+// Complex filters: AND logic, REGEX, deep nesting (need parallel workers for best perf)
+//
+// Strategy: OR-only filters with simple CONTAINS are fast enough for reader
+// because they short-circuit on first match (common case: match early in OR list)
 func isSimpleFilter(config *ostrace.FilterConfig) bool {
 	if config == nil || len(config.Filters) == 0 {
 		return true
 	}
 	
-	// If there's only one filter and it's a simple operator, it's safe for reader
+	// Single filter - check if it's simple
 	if len(config.Filters) == 1 {
-		return isSimpleFilterNode(&config.Filters[0])
+		return isSimpleFilterNode(&config.Filters[0], 0)
 	}
 	
-	// Multiple filters or complex logic - let workers handle it (parallelism)
-	return false
+	// Multiple top-level filters act as OR (any match = accept)
+	// Check if all are simple - if so, it's fast enough for reader
+	for i := range config.Filters {
+		if !isSimpleFilterNode(&config.Filters[i], 0) {
+			return false // One complex filter = use workers
+		}
+	}
+	
+	return true // All simple = can use reader fast path
 }
 
 // isSimpleFilterNode checks if a single filter node is simple
-func isSimpleFilterNode(filter *ostrace.Filter) bool {
-	// Logical operators (AND/OR/NOT) need parallel evaluation
-	if filter.Type == "AND" || filter.Type == "OR" || filter.Type == "NOT" {
+// maxDepth limits how deep we'll go before calling it "complex"
+func isSimpleFilterNode(filter *ostrace.Filter, depth int) bool {
+	// Too deep = complex (use workers for parallelism)
+	// Allow up to 3 levels: OR -> AND -> OR -> CONTAINS
+	if depth > 3 {
 		return false
 	}
 	
-	// REGEX is CPU-intensive, let workers handle it
+	// REGEX is CPU-intensive, always use workers
 	if filter.Operator == "REGEX" {
 		return false
 	}
 	
+	// AND logic requires ALL children to pass = more work
+	// However, simple AND (2-3 simple CONTAINS checks) is still fast
+	// Example: AND([Recording Indicator], sensor: camera) = ~40ns
+	if filter.Type == "AND" {
+		// Only allow AND if it has few simple children
+		if len(filter.Children) > 3 {
+			return false // Too many checks
+		}
+		// Check all children are simple (no nested logic)
+		for i := range filter.Children {
+			if !isSimpleFilterNode(&filter.Children[i], depth+1) {
+				return false
+			}
+		}
+		return true // Simple AND with few children = acceptable
+	}
+	
+	// NOT logic is rare and typically slower
+	if filter.Type == "NOT" {
+		return false
+	}
+	
+	// OR logic with simple children is acceptable because:
+	// 1. Short-circuits on first match (often matches early)
+	// 2. SpringBoard filters typically match frequently
+	// 3. String CONTAINS is ~20ns, even 10 checks = 200ns
+	if filter.Type == "OR" {
+		// Check all children are simple
+		for i := range filter.Children {
+			if !isSimpleFilterNode(&filter.Children[i], depth+1) {
+				return false
+			}
+		}
+		return true // OR of simple filters = simple
+	}
+	
+	// Field-based filter - check operator
 	// CONTAINS, EQUALS, STARTS_WITH, ENDS_WITH, NOT_CONTAINS are fast
 	// These are just string comparisons, safe for reader goroutine
 	switch filter.Operator {
