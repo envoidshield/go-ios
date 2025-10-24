@@ -337,17 +337,24 @@ func main() {
 		go watchdogMonitor(watchdogChan)
 	}
 
-	// Main reading loop
+	// Main reading loop with inline fast-path filtering for high-volume scenarios
 	readErrorChan := make(chan error, 1)
 	go func() {
 		consecutiveErrors := 0
 		lastDiagnostic := time.Now()
+		logsReadTotal := uint64(0)
+		logsFilteredOut := uint64(0)
+		lastPingCheck := time.Now()
 		
 		for {
 			// Diagnostic logging (non-blocking)
 			if *diagnostics && time.Since(lastDiagnostic) >= 10*time.Second {
-				logStderr("[DIAG] Reading logs... Total processed: %d, Errors: %d\n", 
-					atomic.LoadUint64(&logsProcessed), consecutiveErrors)
+				filterRatio := float64(0)
+				if logsReadTotal > 0 {
+					filterRatio = float64(logsFilteredOut) / float64(logsReadTotal) * 100
+				}
+				logStderr("[DIAG] Reading logs... Total: %d, Filtered out: %d (%.1f%%), Sent to workers: %d, Errors: %d\n", 
+					logsReadTotal, logsFilteredOut, filterRatio, atomic.LoadUint64(&logsProcessed), consecutiveErrors)
 				lastDiagnostic = time.Now()
 			}
 			
@@ -391,12 +398,45 @@ func main() {
 				consecutiveErrors = 0
 			}
 			
+			logsReadTotal++
+			
 			// Update last log received time for watchdog
 			if readTimeout > 0 {
 				lastLogReceived.Store(time.Now())
 			}
 			
-			// Send to workers
+			// CRITICAL: Reader must NEVER block on CPU-intensive work
+			// Strategy: Apply fast pre-filters in reader, send rest to workers
+			// This keeps socket draining at maximum speed
+			
+			shouldSkip := false
+			
+			// Fast-path optimization: Simple content filters only (not regex/complex)
+			// Only apply if filter is simple string matching to avoid blocking reader
+			if filterConfig != nil && isSimpleFilter(filterConfig) {
+				matchesFilter := ostrace.EvaluateFilters(entry, filterConfig)
+				
+				if !matchesFilter {
+					logsFilteredOut++
+					shouldSkip = true
+					
+					// Handle ping even for filtered-out logs (but don't check on every iteration)
+					// Only check every Nth log to avoid time.Since() overhead in hot path
+					if pingInterval > 0 && logsReadTotal % 1000 == 0 && time.Since(lastPingCheck) >= pingInterval {
+						sendPingDirect(outputChan, *jsonOutput)
+						lastPingCheck = time.Now()
+					}
+				}
+			}
+			
+			if shouldSkip {
+				// Fast path: discard without worker overhead
+				ostrace.PutLogEntry(entry)
+				continue
+			}
+			
+			// Send to workers for filtering (if complex) and formatting
+			// Workers will re-evaluate filter if needed (parallel processing)
 			select {
 			case entryChan <- entry:
 				atomic.AddUint64(&logsProcessed, 1)
@@ -460,29 +500,21 @@ func worker(entryChan <-chan *ostrace.LogEntry, outputChan chan<- formattedLog, 
 	// Local buffer for formatting (reused across entries)
 	localBuf := make([]byte, 0, 4096)
 	
+	// Determine if we need to re-evaluate filters (complex filters only)
+	needsFiltering := filterConfig != nil && !isSimpleFilter(filterConfig)
+	
 	for entry := range entryChan {
-		// Check if we should send a ping (log received but may not match filter)
-		shouldSendPing := false
-		if pingInterval > 0 {
-			lastPing := lastPingTime.Load().(time.Time)
-			if time.Since(lastPing) >= pingInterval {
-				shouldSendPing = true
+		// Re-evaluate filter if it's complex (regex, AND/OR, etc.)
+		// Simple filters were already evaluated in reader (fast path)
+		if needsFiltering {
+			matchesFilter := ostrace.EvaluateFilters(entry, filterConfig)
+			if !matchesFilter {
+				ostrace.PutLogEntry(entry)
+				continue
 			}
 		}
 		
-		// Apply filter
-		matchesFilter := filterConfig == nil || ostrace.EvaluateFilters(entry, filterConfig)
-		
-		if !matchesFilter {
-			// Log doesn't match filter, but send ping if needed
-			if shouldSendPing {
-				sendPing(outputChan, jsonOutput)
-			}
-			ostrace.PutLogEntry(entry)
-			continue
-		}
-		
-		// Log matches filter - format and output
+		// Format and output
 		localBuf = localBuf[:0]
 		if jsonOutput {
 			// High-performance JSON encoding
@@ -509,8 +541,54 @@ func worker(entryChan <-chan *ostrace.LogEntry, outputChan chan<- formattedLog, 
 	}
 }
 
+// isSimpleFilter determines if a filter is "simple" enough to evaluate in the reader
+// Simple filters: single field CONTAINS/EQUALS checks (fast string operations)
+// Complex filters: REGEX, AND/OR logic, multiple conditions (need parallel workers)
+func isSimpleFilter(config *ostrace.FilterConfig) bool {
+	if config == nil || len(config.Filters) == 0 {
+		return true
+	}
+	
+	// If there's only one filter and it's a simple operator, it's safe for reader
+	if len(config.Filters) == 1 {
+		return isSimpleFilterNode(&config.Filters[0])
+	}
+	
+	// Multiple filters or complex logic - let workers handle it (parallelism)
+	return false
+}
+
+// isSimpleFilterNode checks if a single filter node is simple
+func isSimpleFilterNode(filter *ostrace.Filter) bool {
+	// Logical operators (AND/OR/NOT) need parallel evaluation
+	if filter.Type == "AND" || filter.Type == "OR" || filter.Type == "NOT" {
+		return false
+	}
+	
+	// REGEX is CPU-intensive, let workers handle it
+	if filter.Operator == "REGEX" {
+		return false
+	}
+	
+	// CONTAINS, EQUALS, STARTS_WITH, ENDS_WITH, NOT_CONTAINS are fast
+	// These are just string comparisons, safe for reader goroutine
+	switch filter.Operator {
+	case "CONTAINS", "EQUALS", "NOT_CONTAINS", "STARTS_WITH", "ENDS_WITH":
+		return true
+	default:
+		return false
+	}
+}
+
 // sendPing sends a ping message and updates the last ping time
+// DEPRECATED: Use sendPingDirect instead for non-blocking operation
 func sendPing(outputChan chan<- formattedLog, jsonOutput bool) {
+	sendPingDirect(outputChan, jsonOutput)
+}
+
+// sendPingDirect sends a ping message without blocking
+// Used by the reader goroutine to avoid blocking on channel sends
+func sendPingDirect(outputChan chan<- formattedLog, jsonOutput bool) {
 	// Update last ping time atomically
 	now := time.Now()
 	lastPingTime.Store(now)
@@ -523,8 +601,15 @@ func sendPing(outputChan chan<- formattedLog, jsonOutput bool) {
 		pingMsg = []byte("PING\n")
 	}
 	
-	// Send ping to output channel (NO LOCK!)
-	outputChan <- formattedLog{data: pingMsg}
+	// Try to send ping to output channel (non-blocking)
+	// If channel is full, skip ping to avoid blocking the reader
+	select {
+	case outputChan <- formattedLog{data: pingMsg}:
+		// Ping sent successfully
+	default:
+		// Channel full - skip ping to avoid blocking
+		// Reader goroutine must NEVER block
+	}
 }
 
 // dedicatedWriter is a single goroutine that drains the output channel

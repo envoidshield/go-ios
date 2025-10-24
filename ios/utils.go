@@ -142,7 +142,7 @@ func GetDeviceWithAddress(udid string, address string, provider RsdPortProvider)
 		return device, nil
 	}
 	
-	// Fall back to usbmuxd enumeration for regular connections
+	// Fall back to usbmuxd enumeration for regular connections 
 	deviceList, err := ListDevices()
 	if err != nil {
 		return DeviceEntry{}, err
