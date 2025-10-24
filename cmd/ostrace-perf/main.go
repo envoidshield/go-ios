@@ -152,7 +152,10 @@ func main() {
 	startupCancelChan := make(chan struct{})
 	
 	if startupTimeout > 0 {
-		fmt.Fprintf(os.Stderr, "Startup timeout: %v (prevents hanging during initialization)\n", startupTimeout)
+		// Only log if diagnostics enabled to avoid stderr noise
+		if *diagnostics {
+			fmt.Fprintf(os.Stderr, "Startup timeout: %v\n", startupTimeout)
+		}
 		
 		// Start startup watchdog
 		go func() {
@@ -162,8 +165,8 @@ func main() {
 			select {
 			case <-timer.C:
 				// Timeout reached - clean exit
-				fmt.Fprintf(os.Stderr, "\nERROR: Startup timeout after %v\n", startupTimeout)
-				fmt.Fprintf(os.Stderr, "Possible causes: device not responding, connection issues, service unresponsive\n")
+				fmt.Fprintf(os.Stderr, "ERROR: Startup timeout after %v\n", startupTimeout)
+				fmt.Fprintf(os.Stderr, "Device not responding or connection issues\n")
 				os.Exit(3) // Exit code 3 for startup timeout
 			case <-startupCancelChan:
 				// Startup completed successfully
