@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"github.com/danielpaulus/go-ios/ios"
 	"github.com/danielpaulus/go-ios/ios/tunnel"
+	"howett.net/plist"
 )
 
 // GUIApp represents the main GUI application
@@ -481,9 +484,9 @@ func (g *GUIApp) extractUdidFromDeviceString(deviceStr string) string {
 }
 
 // postToBalena posts device information to the Balena endpoint
-func (g *GUIApp) postToBalena(device *tunnel.Tunnel, hostKey string) (bool, string) {
+func (g *GUIApp) postToBalena(device *tunnel.Tunnel, hostKey string, privateKey string, publicKey string) (bool, string) {
 	// Balena endpoint configuration
-	balenaURL := "URL"
+	balenaURL := "http://192.168.42.1:8000/devices/trust"
 	
 	// Prepare device data with all required fields
 	deviceData := map[string]interface{}{
@@ -494,8 +497,8 @@ func (g *GUIApp) postToBalena(device *tunnel.Tunnel, hostKey string) (bool, stri
 		"pairedAt":               time.Now().Format(time.RFC3339),
 		"deviceName":             g.getDeviceName(device.Udid),
 		"device_type":            "iPhone", // Required field
-		"private_key":            "",    // Required field - empty for now
-		"public_key":             "",    // Required field - empty for now
+		"private_key":            privateKey, // Ed25519 private key (base64 encoded)
+		"public_key":             publicKey,  // Ed25519 public key (base64 encoded)
 		"remote_unlock_host_key": hostKey, // Use hostKey as remote unlock host key
 	}
 	
@@ -505,6 +508,12 @@ func (g *GUIApp) postToBalena(device *tunnel.Tunnel, hostKey string) (bool, stri
 		log.Printf("Error marshaling device data: %v", err)
 		return false, fmt.Sprintf("JSON marshaling error: %v", err)
 	}
+	
+	// Print the POST request data
+	log.Printf("===== POST Request to Balena =====")
+	log.Printf("URL: %s", balenaURL)
+	log.Printf("JSON Data: %s", string(jsonData))
+	log.Printf("=================================")
 	
 	// Create HTTP request
 	req, err := http.NewRequest("POST", balenaURL, bytes.NewBuffer(jsonData))
@@ -518,7 +527,7 @@ func (g *GUIApp) postToBalena(device *tunnel.Tunnel, hostKey string) (bool, stri
 	req.Header.Set("User-Agent", "iOS-Tunnel-Manager/1.0")
 	
 	// Set Basic Authentication
-	req.SetBasicAuth("USER", "PASSWORD")
+	req.SetBasicAuth("admin", "XLQS8Rv07N7dBshRZifP")
 	
 	// Create HTTP client with timeout
 	client := &http.Client{
@@ -648,8 +657,33 @@ func (g *GUIApp) pairDevice() {
 		// Update instruction - pairing completed
 		g.updateCurrentInstruction("Device paired! Posting to server...")
 		
+		// Read selfIdentity.plist to extract private and public keys
+		privateKey := ""
+		publicKey := ""
+		plistPath := "./selfIdentity.plist"
+		content, err := os.ReadFile(plistPath)
+		if err == nil {
+			var deviceInfo map[string]interface{}
+			_, err = plist.Unmarshal(content, &deviceInfo)
+			if err == nil {
+				// Extract private key
+				if privKeyData, ok := deviceInfo["privateKey"].([]byte); ok {
+					privateKey = base64.StdEncoding.EncodeToString(privKeyData)
+				} else if privKeyStr, ok := deviceInfo["privateKey"].(string); ok {
+					privateKey = privKeyStr
+				}
+				
+				// Extract public key
+				if pubKeyData, ok := deviceInfo["publicKey"].([]byte); ok {
+					publicKey = base64.StdEncoding.EncodeToString(pubKeyData)
+				} else if pubKeyStr, ok := deviceInfo["publicKey"].(string); ok {
+					publicKey = pubKeyStr
+				}
+			}
+		}
+		
 		// Post device information to Balena endpoint
-		balenaSuccess, balenaResponse := g.postToBalena(g.selectedDevice, key)
+		balenaSuccess, balenaResponse := g.postToBalena(g.selectedDevice, key, privateKey, publicKey)
 		
 		// Update instruction based on Balena result
 		if balenaSuccess {

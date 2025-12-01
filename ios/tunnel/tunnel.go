@@ -222,28 +222,44 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, erro
 
 	const prefixLength = 64 // TODO: this could be calculated from the netmask provided by the device
 
-	setIpAddr := exec.Command("ifconfig", ifce.Name(), "inet6", "add", fmt.Sprintf("%s/%d", tunnelInfo.ClientParameters.Address, prefixLength))
-	err = runCmd(setIpAddr)
-	if err != nil {
-		return nil, fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
-	}
-
-	// FIXME: we need to reduce the tunnel interface MTU so that the OS takes care of splitting the payloads into
-	// smaller packets. If we use a larger number here, the QUIC tunnel won't send the packets properly
-	// This is only necessary on MacOS, on Linux we can't set the MTU to a value less than 1280 (minimum for IPv6)
-	if runtime.GOOS == "darwin" {
-		ifceMtu := 1202
-		setMtu := exec.Command("ifconfig", ifce.Name(), "mtu", fmt.Sprintf("%d", ifceMtu), "up")
-		err = runCmd(setMtu)
+	// Use 'ip' command for Linux, 'ifconfig' for macOS
+	if runtime.GOOS == "linux" {
+		setIpAddr := exec.Command("ip", "-6", "addr", "add", fmt.Sprintf("%s/%d", tunnelInfo.ClientParameters.Address, prefixLength), "dev", ifce.Name())
+		err = runCmd(setIpAddr)
 		if err != nil {
-			return nil, fmt.Errorf("setupTunnelInterface: failed to configure MTU: %w", err)
+			return nil, fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
 		}
-	}
 
-	enableIfce := exec.Command("ifconfig", ifce.Name(), "up")
-	err = runCmd(enableIfce)
-	if err != nil {
-		return nil, fmt.Errorf("setupTunnelInterface: failed to enable interface %s: %w", ifce.Name(), err)
+		enableIfce := exec.Command("ip", "link", "set", ifce.Name(), "up")
+		err = runCmd(enableIfce)
+		if err != nil {
+			return nil, fmt.Errorf("setupTunnelInterface: failed to enable interface %s: %w", ifce.Name(), err)
+		}
+	} else {
+		// macOS uses ifconfig
+		setIpAddr := exec.Command("ifconfig", ifce.Name(), "inet6", "add", fmt.Sprintf("%s/%d", tunnelInfo.ClientParameters.Address, prefixLength))
+		err = runCmd(setIpAddr)
+		if err != nil {
+			return nil, fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
+		}
+
+		// FIXME: we need to reduce the tunnel interface MTU so that the OS takes care of splitting the payloads into
+		// smaller packets. If we use a larger number here, the QUIC tunnel won't send the packets properly
+		// This is only necessary on MacOS, on Linux we can't set the MTU to a value less than 1280 (minimum for IPv6)
+		if runtime.GOOS == "darwin" {
+			ifceMtu := 1202
+			setMtu := exec.Command("ifconfig", ifce.Name(), "mtu", fmt.Sprintf("%d", ifceMtu), "up")
+			err = runCmd(setMtu)
+			if err != nil {
+				return nil, fmt.Errorf("setupTunnelInterface: failed to configure MTU: %w", err)
+			}
+		}
+
+		enableIfce := exec.Command("ifconfig", ifce.Name(), "up")
+		err = runCmd(enableIfce)
+		if err != nil {
+			return nil, fmt.Errorf("setupTunnelInterface: failed to enable interface %s: %w", ifce.Name(), err)
+		}
 	}
 
 	return ifce, nil
