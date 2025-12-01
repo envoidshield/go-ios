@@ -25,6 +25,19 @@ import (
 	"howett.net/plist"
 )
 
+var (
+	// debugEnabled controls whether debug logs are shown
+	// Set via DEBUG environment variable (any non-empty value enables debug)
+	debugEnabled = os.Getenv("DEBUG") != ""
+)
+
+// debugLog logs at debug level (only if DEBUG environment variable is set)
+func debugLog(format string, v ...interface{}) {
+	if debugEnabled {
+		log.Printf("[DEBUG] "+format, v...)
+	}
+}
+
 // GUIApp represents the main GUI application
 type GUIApp struct {
 	app            fyne.App
@@ -197,15 +210,18 @@ func (g *GUIApp) createControlCard() *widget.Card {
 	g.refreshButton = widget.NewButtonWithIcon("Refresh Devices", theme.ViewRefreshIcon(), g.refreshDevices)
 	g.pairButton = widget.NewButtonWithIcon("Pair Device", theme.ConfirmIcon(), g.pairDevice)
 	g.pairButton.Disable()
+	deleteButton := widget.NewButtonWithIcon("Delete All Devices", theme.DeleteIcon(), g.deleteAllDevices)
 
 	// Button styling
 	g.startButton.Importance = widget.HighImportance
 	g.stopButton.Importance = widget.MediumImportance
 	g.pairButton.Importance = widget.HighImportance
+	deleteButton.Importance = widget.DangerImportance
 
 	// Layout buttons
 	tunnelControls := container.NewHBox(g.startButton, g.stopButton)
 	deviceControls := container.NewHBox(g.refreshButton, g.pairButton)
+	deleteControls := container.NewHBox(deleteButton)
 	
 	allControls := container.NewVBox(
 		widget.NewLabel("Service Controls:"),
@@ -213,6 +229,9 @@ func (g *GUIApp) createControlCard() *widget.Card {
 		widget.NewSeparator(),
 		widget.NewLabel("Device Controls:"),
 		deviceControls,
+		widget.NewSeparator(),
+		widget.NewLabel("Danger Zone:"),
+		deleteControls,
 	)
 
 	card := widget.NewCard("Controls", "", allControls)
@@ -353,7 +372,7 @@ func (g *GUIApp) refreshDevices() {
 	go func() {
 		tunnels, err := g.tunnelManager.ListTunnels()
 		if err != nil {
-			log.Printf("Error listing tunnels: %v", err)
+			debugLog("Error listing tunnels: %v", err)
 			return
 		}
 
@@ -505,20 +524,20 @@ func (g *GUIApp) postToBalena(device *tunnel.Tunnel, hostKey string, privateKey 
 	// Convert to JSON
 	jsonData, err := json.Marshal(deviceData)
 	if err != nil {
-		log.Printf("Error marshaling device data: %v", err)
+		debugLog("Error marshaling device data: %v", err)
 		return false, fmt.Sprintf("JSON marshaling error: %v", err)
 	}
 	
 	// Print the POST request data
-	log.Printf("===== POST Request to Balena =====")
-	log.Printf("URL: %s", balenaURL)
-	log.Printf("JSON Data: %s", string(jsonData))
-	log.Printf("=================================")
+	debugLog("===== POST Request to Balena =====")
+	debugLog("URL: %s", balenaURL)
+	debugLog("JSON Data: %s", string(jsonData))
+	debugLog("=================================")
 	
 	// Create HTTP request
 	req, err := http.NewRequest("POST", balenaURL, bytes.NewBuffer(jsonData))
 	if err != nil {
-		log.Printf("Error creating request: %v", err)
+		debugLog("Error creating request: %v", err)
 		return false, fmt.Sprintf("Request creation error: %v", err)
 	}
 	
@@ -537,7 +556,7 @@ func (g *GUIApp) postToBalena(device *tunnel.Tunnel, hostKey string, privateKey 
 	// Send request
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("Error sending request to Balena: %v", err)
+		debugLog("Error sending request to Balena: %v", err)
 		return false, fmt.Sprintf("Network error: %v", err)
 	}
 	defer resp.Body.Close()
@@ -545,18 +564,172 @@ func (g *GUIApp) postToBalena(device *tunnel.Tunnel, hostKey string, privateKey 
 	// Read response
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("Error reading response: %v", err)
+		debugLog("Error reading response: %v", err)
 		return false, fmt.Sprintf("Response reading error: %v", err)
 	}
 	
 	// Check response status
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		log.Printf("Successfully posted to Balena. Response: %s", string(body))
+		debugLog("Successfully posted to Balena. Response: %s", string(body))
 		return true, string(body)
 	} else {
-		log.Printf("Balena endpoint returned error. Status: %d, Response: %s", resp.StatusCode, string(body))
+		debugLog("Balena endpoint returned error. Status: %d, Response: %s", resp.StatusCode, string(body))
 		return false, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
+}
+
+// fetchAllDeviceIDs fetches all device IDs from the API
+func (g *GUIApp) fetchAllDeviceIDs() []int {
+	apiBase := "http://192.168.42.1:8000/api/devices"
+	url := fmt.Sprintf("%s?page=1&size=500", apiBase)
+	
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+	
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		debugLog("[!] Failed to create request: %v", err)
+		return []int{}
+	}
+	
+	req.SetBasicAuth("admin", "XLQS8Rv07N7dBshRZifP")
+	req.Header.Set("Content-Type", "application/json")
+	
+	resp, err := client.Do(req)
+	if err != nil {
+		debugLog("[!] Failed to list devices: %v", err)
+		return []int{}
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != 200 {
+		debugLog("[!] Failed to list devices: HTTP %d", resp.StatusCode)
+		return []int{}
+	}
+	
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		debugLog("[!] Failed to read response: %v", err)
+		return []int{}
+	}
+	
+	// Debug: log the raw response
+	debugLog("Raw API response: %s", string(body))
+	
+	var data struct {
+		Items []struct {
+			DeviceID int `json:"device_id"`
+		} `json:"items"`
+	}
+	
+	if err := json.Unmarshal(body, &data); err != nil {
+		debugLog("[!] Failed to parse response: %v", err)
+		debugLog("Response body was: %s", string(body))
+		return []int{}
+	}
+	
+	deviceIDs := make([]int, 0, len(data.Items))
+	for _, item := range data.Items {
+		if item.DeviceID > 0 { // Only include valid device IDs (skip 0 or negative)
+			deviceIDs = append(deviceIDs, item.DeviceID)
+			debugLog("Found device_id: %d", item.DeviceID)
+		} else {
+			debugLog("Skipping invalid device_id: %d", item.DeviceID)
+		}
+	}
+	
+	debugLog("[+] Found %d valid devices", len(deviceIDs))
+	return deviceIDs
+}
+
+// deleteDevice deletes a single device by ID
+func (g *GUIApp) deleteDevice(deviceID int) bool {
+	apiBase := "http://192.168.42.1:8000/api/devices"
+	url := fmt.Sprintf("%s/remove", apiBase)
+	
+	debugLog("[•] Deleting device %d...", deviceID)
+	
+	payload := map[string]int{"device_id": deviceID}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		debugLog("[✗] Failed to marshal request: %v", err)
+		return false
+	}
+	
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+	
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		debugLog("[✗] Failed to create request: %v", err)
+		return false
+	}
+	
+	req.SetBasicAuth("admin", "XLQS8Rv07N7dBshRZifP")
+	req.Header.Set("Content-Type", "application/json")
+	
+	resp, err := client.Do(req)
+	if err != nil {
+		debugLog("[✗] Failed to delete %d: %v", deviceID, err)
+		return false
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		debugLog("[✓] Deleted %d", deviceID)
+		return true
+	} else {
+		body, _ := io.ReadAll(resp.Body)
+		debugLog("[✗] Failed to delete %d: HTTP %d - %s", deviceID, resp.StatusCode, string(body))
+		return false
+	}
+}
+
+// deleteAllDevices deletes all devices from the Balena endpoint
+func (g *GUIApp) deleteAllDevices() {
+	// Show confirmation dialog
+	dialog.ShowConfirm("Delete All Devices", 
+		"Are you sure you want to delete ALL devices? This action cannot be undone.",
+		func(confirmed bool) {
+			if !confirmed {
+				return
+			}
+			
+			go func() {
+				g.updateCurrentInstruction("Fetching device list...")
+				
+				deviceIDs := g.fetchAllDeviceIDs()
+				
+				if len(deviceIDs) == 0 {
+					// Fallback: delete device IDs 0-20
+					debugLog("[!] Falling back to deleting device IDs 0–20...")
+					g.updateCurrentInstruction("Deleting devices 0-20 (fallback)...")
+					for deviceID := 0; deviceID <= 20; deviceID++ {
+						g.deleteDevice(deviceID)
+					}
+					g.updateCurrentInstruction("Fallback deletion completed")
+					dialog.ShowInformation("Delete Complete", 
+						"Attempted to delete devices 0-20 (fallback mode).", g.window)
+					return
+				}
+				
+				g.updateCurrentInstruction(fmt.Sprintf("Deleting %d devices...", len(deviceIDs)))
+				
+				successCount := 0
+				for _, deviceID := range deviceIDs {
+					if g.deleteDevice(deviceID) {
+						successCount++
+					}
+				}
+				
+				g.updateCurrentInstruction(fmt.Sprintf("Deleted %d/%d devices", successCount, len(deviceIDs)))
+				dialog.ShowInformation("Delete Complete", 
+					fmt.Sprintf("Successfully deleted %d out of %d devices.", successCount, len(deviceIDs)), 
+					g.window)
+			}()
+		}, g.window)
 }
 
 // pairDevice pairs with the selected device
@@ -574,7 +747,7 @@ func (g *GUIApp) pairDevice() {
 		defer func() {
 			// Ensure progress dialog is hidden even if panic occurs
 			if r := recover(); r != nil {
-				log.Printf("Panic in pairing process: %v", r)
+				debugLog("Panic in pairing process: %v", r)
 				progressDialog.Hide()
 				dialog.ShowError(fmt.Errorf("pairing process crashed: %v", r), g.window)
 			}
