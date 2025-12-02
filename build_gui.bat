@@ -1,35 +1,9 @@
 @echo off
-REM Build script for iOS Tunnel Manager GUI on Windows
-
-echo Building iOS Tunnel Manager GUI...
-
-REM Check if Go is installed
-go version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo Error: Go is not installed or not in PATH
-    pause
-    exit /b 1
-)
-
-REM Install Fyne CLI tool if not present
-where fyne >nul 2>&1
-if %errorlevel% neq 0 (
-    echo Installing Fyne CLI tool...
-    go install fyne.io/fyne/v2/cmd/fyne@latest
-)
-
-REM Install dependencies
-echo Installing dependencies...
-go mod tidy
-
-REM Build the GUI application
-echo Building GUI application...
-go build -o tunnel-manager-gui.exe gui_main.go gui.go gui_utils.go
-
-REM Create Windows app bundle
-echo Creating Windows app bundle...
-fyne package -os windows -icon icon.png
-
-echo Build completed!
-echo Run with: tunnel-manager-gui.exe
-pause
+set PATH=C:\mingw64\bin;%PATH%
+set CGO_ENABLED=1
+set CC=gcc
+echo Generating Windows resources...
+%USERPROFILE%\go\bin\rsrc.exe -manifest manifest.xml -ico favicon.ico -o rsrc.syso
+echo Building executable...
+"C:\Program Files\Go\bin\go.exe" build -tags gui -ldflags="-H windowsgui" -o Pairing-Assistant.exe
+echo Done!

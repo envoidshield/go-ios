@@ -1,3 +1,6 @@
+//go:build gui
+// +build gui
+
 package main
 
 import (
@@ -5,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"io"
 	"log"
 	"net/http"
@@ -15,9 +19,11 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/danielpaulus/go-ios/ios"
@@ -38,6 +44,27 @@ func debugLog(format string, v ...interface{}) {
 	}
 }
 
+// isAdmin checks if the program is running with administrator privileges on Windows
+func isAdmin() bool {
+	_, err := os.Open("\\\\.\\PHYSICALDRIVE0")
+	if err != nil {
+		return false
+	}
+	return true
+}
+
+// UIState represents the current state of the UI wizard
+type UIState int
+
+const (
+	StateIdle UIState = iota
+	StateServiceStarting
+	StateWaitingForDevice
+	StatePairing
+	StateSuccess
+	StateError
+)
+
 // GUIApp represents the main GUI application
 type GUIApp struct {
 	app            fyne.App
@@ -46,6 +73,25 @@ type GUIApp struct {
 	tunnelStatus   binding.String
 	deviceList     binding.StringList
 	selectedDevice *tunnel.Tunnel
+	currentState   UIState
+
+	// UI components
+	mainContainer    *fyne.Container
+	logoImage        *fyne.Container
+	titleLabel       *widget.Label
+	stepLabel        *widget.Label
+	progressIndicator *widget.ProgressBar
+	statusCard       *widget.Card
+	instructionLabel *widget.Label
+	deviceNameLabel  *widget.Label
+	actionButton     *widget.Button
+	cancelButton     *widget.Button
+	closeButton      *widget.Button
+	detailsLabel     *widget.Label
+	spinner          *widget.ProgressBarInfinite
+	mainMenu         *fyne.MainMenu
+
+	// Legacy components (for compatibility)
 	statusLabel    *widget.Label
 	deviceListBox  *widget.List
 	startButton    *widget.Button
@@ -53,27 +99,67 @@ type GUIApp struct {
 	refreshButton  *widget.Button
 	pairButton     *widget.Button
 	progressBar    *widget.ProgressBar
-	// New status indicators
 	pairingStatusLabel *widget.Label
 	balenaStatusLabel  *widget.Label
 	lastPairingInfo    *widget.Label
 }
 
+// forceLight is a custom theme that forces light mode with opaque progress bar
+type forceLight struct{}
+
+func (f *forceLight) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	// Make progress bar more opaque
+	if name == theme.ColorNamePrimary {
+		return color.RGBA{R: 0, G: 122, B: 255, A: 255} // Solid blue
+	}
+	return theme.DefaultTheme().Color(name, theme.VariantLight)
+}
+
+func (f *forceLight) Icon(name fyne.ThemeIconName) fyne.Resource {
+	return theme.DefaultTheme().Icon(name)
+}
+
+func (f *forceLight) Font(style fyne.TextStyle) fyne.Resource {
+	return theme.DefaultTheme().Font(style)
+}
+
+func (f *forceLight) Size(name fyne.ThemeSizeName) float32 {
+	return theme.DefaultTheme().Size(name)
+}
+
 // NewGUIApp creates a new GUI application
 func NewGUIApp() *GUIApp {
 	myApp := app.NewWithID("com.tunnelmanager.app")
-	myApp.SetIcon(theme.ComputerIcon())
-	
-	window := myApp.NewWindow("iOS Tunnel Manager")
-	window.Resize(fyne.NewSize(900, 700))
+
+	// Force light theme regardless of system settings
+	myApp.Settings().SetTheme(&forceLight{})
+
+	// Use embedded favicon.ico as app icon
+	myApp.SetIcon(resourceFaviconIco)
+
+	window := myApp.NewWindow("ENVOID Pairing Assistant")
+	window.Resize(fyne.NewSize(500, 700))
 	window.CenterOnScreen()
-	
+
 	// Set Windows-specific properties
 	window.SetFixedSize(false)
 	window.SetMaster()
 
+	// Create temporary directory for pairing records
+	tempDir := os.TempDir()
+	pairingDir := fmt.Sprintf("envoid-pairing-%d", time.Now().Unix())
+	recordsPath := fmt.Sprintf("%s/%s", tempDir, pairingDir)
+
+	// Create the directory
+	if err := os.MkdirAll(recordsPath, 0755); err != nil {
+		log.Printf("Warning: failed to create temporary directory: %v", err)
+		recordsPath = "." // Fallback to current directory
+	} else {
+		log.Printf("Using temporary directory: %s", recordsPath)
+	}
+
 	// Create tunnel manager
-	tunnelManager := NewTunnelManager(".", 28100, "localhost", false)
+	tunnelManager := NewTunnelManager(recordsPath, 28100, "localhost", false)
 
 	gui := &GUIApp{
 		app:           myApp,
@@ -81,332 +167,614 @@ func NewGUIApp() *GUIApp {
 		tunnelManager: tunnelManager,
 		tunnelStatus:  binding.NewString(),
 		deviceList:    binding.NewStringList(),
+		currentState:  StateIdle,
 	}
 
 	gui.setupUI()
 	gui.setupEventHandlers()
-	
-	// Auto-start the service when app starts
-	go func() {
-		time.Sleep(1 * time.Second) // Small delay to let UI initialize
-		gui.startTunnel()
-	}()
-	
+
+	// Setup cleanup on window close
+	window.SetOnClosed(func() {
+		log.Println("Window closing, cleaning up...")
+		if err := tunnelManager.Cleanup(); err != nil {
+			log.Printf("Error during cleanup: %v", err)
+		}
+	})
+
+	// Check for administrator privileges
+	if !isAdmin() {
+		dialog.ShowInformation("Administrator Privileges Required",
+			"This application requires administrator privileges to function properly.\n\n"+
+				"Please close this window and restart the program by:\n"+
+				"1. Right-click on the program icon\n"+
+				"2. Select 'Run as administrator'\n\n"+
+				"The program will continue but some features may not work correctly.",
+			window)
+	}
+
 	return gui
 }
 
 // setupUI creates the user interface
 func (g *GUIApp) setupUI() {
-	// Title
-	title := widget.NewLabelWithStyle("iOS Tunnel Manager", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
-	title.TextStyle = fyne.TextStyle{Bold: true}
+	// Create menu bar
+	g.createMenuBar()
 
-	// Status section
-	statusCard := g.createStatusCard()
-	
-	// Device discovery section
-	deviceCard := g.createDeviceCard()
-	
-	// Control buttons
-	controlCard := g.createControlCard()
+	// === HEADER SECTION - Logo prominente ===
+	g.logoImage = g.createLogoHeader()
 
-	// Progress indicator
-	g.progressBar = widget.NewProgressBar()
-	g.progressBar.Hide()
+	// === PROGRESS SECTION - Diseño limpio y moderno ===
+	g.stepLabel = widget.NewLabelWithStyle("", fyne.TextAlignCenter, fyne.TextStyle{Bold: false})
 
-	// Main layout
+	g.progressIndicator = widget.NewProgressBar()
+	g.progressIndicator.SetValue(0.0)
+
+	// Wrap progress bar to ensure full opacity
+	progressContainer := container.NewStack(
+		canvas.NewRectangle(color.Transparent),
+		g.progressIndicator,
+	)
+
+	progressSection := container.NewVBox(
+		container.NewPadded(g.stepLabel),
+		container.NewPadded(progressContainer),
+	)
+
+	// === STATUS SECTION - Mensajes centrados y claros ===
+	g.instructionLabel = widget.NewLabelWithStyle(
+		"Connect your iPhone via USB to get started",
+		fyne.TextAlignCenter,
+		fyne.TextStyle{Bold: false},
+	)
+	g.instructionLabel.Wrapping = fyne.TextWrapWord
+
+	g.deviceNameLabel = widget.NewLabelWithStyle("", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+	g.deviceNameLabel.Hide()
+
+	g.spinner = widget.NewProgressBarInfinite()
+	g.spinner.Hide()
+
+	g.detailsLabel = widget.NewLabelWithStyle("", fyne.TextAlignCenter, fyne.TextStyle{})
+	g.detailsLabel.Wrapping = fyne.TextWrapWord
+	g.detailsLabel.Hide()
+
+	statusSection := container.NewVBox(
+		g.instructionLabel,
+		g.deviceNameLabel,
+		g.spinner,
+		g.detailsLabel,
+	)
+
+	// === ACTION BUTTON - Grande y prominente ===
+	g.actionButton = widget.NewButton("Start Pairing", g.startPairingFlow)
+	g.actionButton.Importance = widget.HighImportance
+
+	g.cancelButton = widget.NewButton("Cancel", g.cancelPairingFlow)
+	g.cancelButton.Hide()
+
+	g.closeButton = widget.NewButton("Close", func() {
+		g.window.Close()
+	})
+	g.closeButton.Importance = widget.HighImportance
+	g.closeButton.Hide()
+
+	buttonContainer := container.NewVBox(
+		g.actionButton,
+		g.cancelButton,
+		g.closeButton,
+	)
+
+	// === LAYOUT PRINCIPAL - Espaciado vertical elegante ===
 	content := container.NewVBox(
-		title,
-		widget.NewSeparator(),
-		statusCard,
-		widget.NewSeparator(),
-		deviceCard,
-		widget.NewSeparator(),
-		controlCard,
-		g.progressBar,
+		layout.NewSpacer(),
+		g.logoImage,
+		layout.NewSpacer(),
+		container.NewPadded(progressSection),
+		layout.NewSpacer(),
+		container.NewPadded(statusSection),
+		layout.NewSpacer(),
+		container.NewCenter(buttonContainer),
+		layout.NewSpacer(),
+		layout.NewSpacer(),
+		layout.NewSpacer(),
+		layout.NewSpacer(),
 	)
 
-	// Add padding
-	paddedContent := container.NewPadded(content)
-	g.window.SetContent(paddedContent)
+	// Padding generoso
+	paddedContent := container.NewPadded(
+		container.NewPadded(content),
+	)
+
+	// === WATERMARK BACKGROUND - Aligned to bottom ===
+	watermarkImg := canvas.NewImageFromResource(resourceWatermarkPng)
+	watermarkImg.FillMode = canvas.ImageFillContain
+	watermarkImg.Translucency = 0.83 // Transparent watermark
+	watermarkImg.SetMinSize(fyne.NewSize(450, 450)) // Set minimum size
+
+	// Create a centered container for the watermark at bottom
+	watermarkCentered := container.NewCenter(watermarkImg)
+
+	// Position watermark at bottom
+	watermarkBox := container.NewVBox(
+		layout.NewSpacer(),
+		watermarkCentered,
+	)
+
+	// Stack background behind content
+	stackedContent := container.NewStack(
+		watermarkBox,
+		paddedContent,
+	)
+
+	g.window.SetContent(stackedContent)
+
+	// Initialize legacy components for compatibility
+	g.statusLabel = widget.NewLabel("")
+	g.progressBar = widget.NewProgressBar()
+	g.pairingStatusLabel = widget.NewLabel("")
+	g.statusCard = widget.NewCard("", "", container.NewVBox())
+	g.titleLabel = widget.NewLabel("")
 }
 
-// createStatusCard creates the tunnel status section
-func (g *GUIApp) createStatusCard() *widget.Card {
-	// Main status label
-	g.statusLabel = widget.NewLabel("🔴 Service: Stopped")
-	g.statusLabel.Alignment = fyne.TextAlignCenter
-	g.statusLabel.TextStyle = fyne.TextStyle{Bold: true}
-
-	// Current instruction (one line only)
-	g.pairingStatusLabel = widget.NewLabel("Starting service...")
-	g.pairingStatusLabel.Alignment = fyne.TextAlignCenter
-	g.pairingStatusLabel.TextStyle = fyne.TextStyle{Bold: true}
-
-	// Status container
-	statusContainer := container.NewVBox(
-		g.statusLabel,
-		widget.NewSeparator(),
-		g.pairingStatusLabel,
-	)
-
-	card := widget.NewCard("📋 Process Status", "", statusContainer)
-	return card
+// createLogoHeader creates the logo header section
+func (g *GUIApp) createLogoHeader() *fyne.Container {
+	// Use embedded ENVOID logo - MUCH larger and hero-style
+	img := canvas.NewImageFromResource(resourceENVOIDPng)
+	img.FillMode = canvas.ImageFillContain
+	img.SetMinSize(fyne.NewSize(350, 120))
+	return container.NewCenter(img)
 }
 
-// createDeviceCard creates the device discovery section
-func (g *GUIApp) createDeviceCard() *widget.Card {
-	// Device list
-	g.deviceListBox = widget.NewListWithData(
-		g.deviceList,
-		func() fyne.CanvasObject {
-			return widget.NewLabel("Device")
-		},
-		func(item binding.DataItem, obj fyne.CanvasObject) {
-			deviceInfo := item.(binding.String)
-			deviceStr, _ := deviceInfo.Get()
-			
-			label := obj.(*widget.Label)
-			label.SetText(deviceStr)
-		},
+// createMenuBar creates the application menu bar
+func (g *GUIApp) createMenuBar() {
+	// Devices menu
+	devicesMenu := fyne.NewMenu("Devices",
+		fyne.NewMenuItem("Delete All Devices", func() {
+			g.deleteAllDevices()
+		}),
 	)
 
-	// Device info
-	deviceInfoLabel := widget.NewLabel("No device selected")
-	deviceInfoLabel.Wrapping = fyne.TextWrapWord
+	// Help menu
+	helpMenu := fyne.NewMenu("Help",
+		fyne.NewMenuItem("How to Use", func() {
+			g.showHelpDialog()
+		}),
+		fyne.NewMenuItem("About", func() {
+			g.showAboutDialog()
+		}),
+	)
 
-	// Device selection handler
-	g.deviceListBox.OnSelected = func(id widget.ListItemID) {
-		deviceStr, _ := g.deviceList.GetValue(id)
-		deviceInfoLabel.SetText(fmt.Sprintf("Selected: %s", deviceStr))
-		
-		// Parse and store selected device
-		g.parseSelectedDevice(deviceStr)
-		
-		// Update instruction based on new state
-		g.updateInstructionBasedOnState()
+	// Create main menu (without File menu to avoid duplicate Quit/Exit)
+	g.mainMenu = fyne.NewMainMenu(devicesMenu, helpMenu)
+	g.window.SetMainMenu(g.mainMenu)
+}
+
+// showHelpDialog displays comprehensive help information
+func (g *GUIApp) showHelpDialog() {
+	helpText := `HOW TO PAIR YOUR DEVICE
+
+1. Click "Start Pairing Process"
+2. Connect iPhone via USB cable
+3. Unlock iPhone and tap "Trust This Computer"
+4. Wait for pairing to complete
+
+REQUIREMENTS
+• Run as Administrator
+• USB cable connection
+• iPhone unlocked during pairing
+• Network connection
+
+TROUBLESHOOTING
+• Check USB cable connection
+• Ensure iPhone is unlocked
+• Verify you tapped "Trust"
+• Run as Administrator
+
+Contact ENVOID support for help.`
+
+	dialog.ShowInformation("How to Use", helpText, g.window)
+}
+
+// showAboutDialog displays about information
+func (g *GUIApp) showAboutDialog() {
+	aboutText := `iOS Device Pairing Assistant
+
+Version: 2.5.0
+Developed by: ENVOID
+
+This application facilitates iOS device pairing
+for the ENVOID platform.
+
+© 2025 ENVOID. All rights reserved.`
+
+	content := container.NewVBox(
+		widget.NewLabel(aboutText),
+	)
+
+	customDialog := dialog.NewCustom("About", "OK", content, g.window)
+	customDialog.Show()
+}
+
+// showPrivacyPolicy displays the privacy policy in a scrollable dialog (embedded in exe)
+func (g *GUIApp) showPrivacyPolicy() {
+	privacyText := `Privacy Policy
+
+Last Updated: December 1, 2025
+
+This Privacy Policy describes how Envoid Shield Limited ("Company," "We," "Us," or "Our") operates the Envoid Pairing Assistant application (the "Application") and protects your privacy through secure, isolated local network communication.
+
+By using the Application, you acknowledge that you have read and understood this Privacy Policy. If you do not agree with any part of this policy, you should refrain from using the Application.
+
+1. DEFINITIONS
+
+• Company: Envoid Shield Limited, with its principal office at 7700 Broadway St, Ste 104 PMB1064, San Antonio, TX 78209, United States.
+• Application: The Envoid Pairing Assistant desktop software for Windows.
+• Envoid System: The EnPort device or Envoid infrastructure that manages iOS devices within your organization.
+• Personal Data: Device identifiers (UDID), device name, and pairing certificates necessary for device management.
+• You: Any individual or entity using the Application, either personally or as a representative of an organization.
+
+2. HOW THIS APPLICATION WORKS
+
+The Envoid Pairing Assistant is designed as a secure bridge that connects your iOS device to your Envoid system through an isolated WiFi Direct network, with no internet connection required or used.
+
+Isolated Network Architecture:
+• WiFi Direct Only: All communication occurs exclusively over the isolated WiFi Direct network generated by your Envoid device
+• No Internet: The Application does not connect to the internet and cannot transmit data outside the local network
+• Closed Environment: Data remains within the secure local environment at all times
+• Direct Connection: Your device communicates directly with your Envoid system only
+
+What This Means for Your Privacy:
+If you are not connected to the Envoid WiFi Direct network, the Application cannot function and no data is shared with anyone. The Application is specifically designed to communicate only within this isolated network environment.
+
+3. SECURE PAIRING PROCESS
+
+The Application facilitates a secure pairing between your iOS device and your Envoid system:
+1. Device Connection: You connect your iPhone via USB cable
+2. Trust Establishment: You authorize the connection by tapping "Trust" on your device
+3. Certificate Exchange: Secure pairing certificates are exchanged using Apple's encrypted pairing protocol
+4. Registration: Your device is registered with your local Envoid system for management
+
+Temporary Data During Pairing:
+• Location: System temporary directory on your computer
+• Duration: Only while the Application is running
+• Automatic Deletion: All temporary data is automatically deleted when you close the Application
+• No Permanent Storage: The Application does not permanently store any information on your computer
+
+4. DATA TRANSMISSION SECURITY
+
+Local Network Only:
+All data transmission occurs exclusively within your local network:
+• Communication is limited to: your computer ↔ your iOS device ↔ your Envoid system
+• Zero internet traffic - no data leaves the local environment
+• Zero third-party access - no external services or servers involved
+• Zero cloud storage - everything remains on-premises
+
+Encryption and Authentication:
+• Apple Secure Pairing Protocol: Uses industry-standard 2048-bit RSA encryption
+• Physical Authentication Required: Requires USB connection, device unlock, and explicit user consent ("Trust" prompt)
+• Administrator Protection: Application requires elevated privileges to prevent unauthorized access
+
+5. DATA STORAGE AND RETENTION
+
+On Your Computer:
+• Nothing is permanently stored - all data is automatically deleted when you close the Application
+• Temporary pairing certificates exist only in memory and system temp directory during operation
+
+On Your Envoid System:
+• Device identification and pairing information is stored on your local Envoid system only
+• This enables your organization to manage your device
+• Data never leaves your local network environment
+• Retention is controlled by your organization's policies
+
+6. SHARING OF DATA
+
+We do not share your personal data with any third parties. All data is transmitted solely to your paired Envoid system within your local network environment.
+
+Your data remains under your or your organization's control and is not accessed or disclosed externally unless required by law or with your explicit consent.
+
+7. TRACKING TECHNOLOGIES & COOKIES
+
+We do not use tracking technologies, cookies, or analytics tools in the Application.
+
+8. NETWORK ISOLATION = PRIVACY PROTECTION
+
+The Application's security architecture ensures privacy through isolation:
+• Cannot operate without WiFi Direct connection - if not connected to your Envoid network, no communication occurs
+• Cannot access internet - designed exclusively for local network operation
+• Cannot transmit externally - no mechanism exists to send data outside the local environment
+• Cannot share with third parties - no third-party services, analytics, or tracking
+
+9. USER RIGHTS (GDPR & CCPA)
+
+For Users in the European Union (GDPR):
+You have the right to:
+• Right to be informed: Know what personal data is collected and how it is used
+• Access your data: Request access to the personal data we process about you
+• Request corrections: Request correction of any incomplete or inaccurate data
+• Request deletion: Request deletion of your personal data
+• Restrict processing: Request that we restrict processing of your personal data
+• Object to processing: Object to processing where we rely on legitimate interests
+• Data portability: Request transfer of your data in a machine-readable format
+• Withdraw consent: Withdraw your consent at any time
+• File complaints: Make a complaint to your local data protection authority
+
+For Users in California (CCPA):
+California residents have additional rights under the California Consumer Privacy Act.
+
+Your Control Over Data:
+You maintain complete control:
+• Close the Application: All local data is immediately and automatically deleted
+• Disconnect from Network: Application cannot function without the isolated WiFi Direct connection
+• Remove Device Registration: Use the "Delete All Devices" feature or contact your administrator
+• Revoke Trust: Use iOS Settings → General → Transfer or Reset iPhone → Reset Location & Privacy
+
+To exercise your privacy rights, contact us at info@envoid.com or contact your organization's administrator.
+
+10. SPECIAL CATEGORIES OF PERSONAL DATA
+
+We do not collect any special categories of personal data about you, including details about your race or ethnicity, religious or philosophical beliefs, sex life, sexual orientation, or political opinions.
+
+11. WHAT WE DO NOT DO
+
+The Application does not:
+• Access personal content (photos, messages, documents, contacts, etc.)
+• Connect to the internet
+• Transmit data outside the local network
+• Share data with third parties
+• Use analytics, tracking, or telemetry services
+• Store data permanently on your computer
+• Upload data to cloud services
+
+12. CHILDREN'S PRIVACY
+
+This Application is designed for enterprise use and does not access any personal content from iOS devices. It only facilitates secure device pairing.
+
+13. INTERNATIONAL TRANSFERS
+
+By default, the Application transmits data only to your local Envoid system within your network environment. No international data transfers occur because all communication is confined to your isolated local network.
+
+14. TECHNICAL COMPLIANCE
+
+This Application's architecture inherently complies with data protection regulations (GDPR, CCPA, etc.) because:
+• All processing occurs within your local, isolated network
+• No data is transmitted to external parties
+• No cloud processing or storage
+• No cross-border data transfers
+• Minimal data collection by design
+
+15. THIRD-PARTY LINKS AND SITES
+
+The Application does not contain links to third-party websites or services. All functionality is self-contained and operates exclusively within your local network environment.
+
+16. CHANGES TO THIS POLICY
+
+We may update this Privacy Policy to reflect changes to the Application. The "Effective Date" above indicates the last revision. Continued use of the Application constitutes acceptance of the updated policy.
+
+17. CONTACT US
+
+For any questions regarding this Privacy Policy, you can contact us at:
+
+Envoid Shield Limited
+7700 Broadway St, Ste 104 PMB1064
+San Antonio, TX 78209
+United States
+
+Email: info@envoid.com
+Website: https://www.envoid.com
+
+For questions about data stored on your Envoid system, contact your organization's administrator.
+
+18. YOUR CONSENT
+
+By using the Envoid Pairing Assistant, you acknowledge that you have read and understood this Privacy Policy and agree to its terms.
+
+You understand that:
+• The Application operates exclusively within an isolated local network
+• No data is transmitted outside this secure environment
+• All local data is automatically deleted when you close the Application
+• The Application cannot function without connection to your Envoid WiFi Direct network
+
+If you do not agree with this policy, please discontinue use of the Application immediately.
+
+© 2025 Envoid Shield Limited. All rights reserved.
+
+Designed for Privacy. Built for Security. Operates in Isolation.`
+
+	// Create scrollable content with RichText for better performance
+	richText := widget.NewRichTextFromMarkdown(privacyText)
+	richText.Wrapping = fyne.TextWrapWord
+
+	scroll := container.NewScroll(richText)
+	scroll.SetMinSize(fyne.NewSize(600, 500))
+
+	customDialog := dialog.NewCustom("Privacy Policy", "Close", scroll, g.window)
+	customDialog.Resize(fyne.NewSize(650, 550))
+	customDialog.Show()
+}
+
+// startPairingFlow starts the pairing wizard flow
+func (g *GUIApp) startPairingFlow() {
+	// Reset selected device if starting new pairing
+	g.selectedDevice = nil
+
+	g.currentState = StateServiceStarting
+	g.updateUIForState()
+
+	// Hide action button and close button, show cancel button
+	g.actionButton.Hide()
+	g.closeButton.Hide()
+	g.cancelButton.Show()
+
+	// Start the service
+	go g.startTunnel()
+}
+
+// cancelPairingFlow cancels the pairing process
+func (g *GUIApp) cancelPairingFlow() {
+	g.stopTunnel()
+	g.currentState = StateIdle
+	g.updateUIForState()
+
+	// Show action button, hide cancel button
+	g.actionButton.Show()
+	g.cancelButton.Hide()
+}
+
+// updateUIForState updates the UI based on current state
+func (g *GUIApp) updateUIForState() {
+	switch g.currentState {
+	case StateIdle:
+		g.stepLabel.SetText("")
+		g.progressIndicator.SetValue(0.0)
+		g.instructionLabel.SetText("Connect your iPhone to get started")
+		g.deviceNameLabel.Hide()
+		g.spinner.Hide()
+		g.detailsLabel.Hide()
+		g.actionButton.SetText("Start Pairing")
+		g.actionButton.Show()
+		g.cancelButton.Hide()
+		g.closeButton.Hide()
+
+	case StateServiceStarting:
+		g.stepLabel.SetText("Starting...")
+		g.progressIndicator.SetValue(0.33)
+		g.instructionLabel.SetText("Initializing pairing service")
+		g.deviceNameLabel.Hide()
+		g.spinner.Show()
+		g.spinner.Start()
+		g.detailsLabel.Hide()
+
+	case StateWaitingForDevice:
+		g.stepLabel.SetText("Waiting for device")
+		g.progressIndicator.SetValue(0.5)
+		g.instructionLabel.SetText("Connect iPhone via USB")
+		g.deviceNameLabel.SetText("Unlock your iPhone and tap 'Trust This Computer', then enter passcode")
+		g.deviceNameLabel.Show()
+		g.spinner.Show()
+		g.spinner.Start()
+		g.detailsLabel.Hide()
+
+	case StatePairing:
+		g.stepLabel.SetText("Pairing device")
+		g.progressIndicator.SetValue(0.8)
+		g.instructionLabel.SetText("Finalizing connection")
+		g.deviceNameLabel.SetText("Tap 'Trust' for ENVOID if prompted, then enter passcode")
+		g.deviceNameLabel.Show()
+		g.spinner.Show()
+		g.spinner.Start()
+		g.detailsLabel.Hide()
+
+	case StateSuccess:
+		g.stepLabel.SetText("Success")
+		g.progressIndicator.SetValue(1.0)
+		g.instructionLabel.SetText("Your device has been paired!")
+		g.deviceNameLabel.SetText("Connect your iPhone to EnvoidDirect WiFi to be protected by the EnPortable")
+		g.deviceNameLabel.Show()
+		g.spinner.Stop()
+		g.spinner.Hide()
+		g.detailsLabel.Hide()
+		g.actionButton.SetText("Pair Another Device")
+		g.actionButton.Importance = widget.MediumImportance
+		g.actionButton.Show()
+		g.cancelButton.Hide()
+		g.closeButton.SetText("Done")
+		g.closeButton.Importance = widget.HighImportance
+		g.closeButton.Show()
+
+	case StateError:
+		g.stepLabel.SetText("Connection Error")
+		g.progressIndicator.SetValue(0.0)
+		g.instructionLabel.SetText("Unable to complete pairing")
+		g.deviceNameLabel.SetText("Please check:\n• Computer is connected to EnvoidDirect WiFi\n• iPhone is unlocked\n• Trust prompt was accepted with the correct passcode")
+		g.deviceNameLabel.Show()
+		g.spinner.Stop()
+		g.spinner.Hide()
+		g.detailsLabel.Hide()
+		g.actionButton.SetText("Try Again")
+		g.actionButton.Importance = widget.HighImportance
+		g.actionButton.Show()
+		g.cancelButton.Hide()
+		g.closeButton.SetText("Close")
+		g.closeButton.Show()
 	}
-
-	deviceContainer := container.NewBorder(
-		widget.NewLabel("Available Devices:"),
-		deviceInfoLabel,
-		nil,
-		nil,
-		g.deviceListBox,
-	)
-
-	card := widget.NewCard("Device Discovery", "", deviceContainer)
-	return card
-}
-
-// createControlCard creates the control buttons section
-func (g *GUIApp) createControlCard() *widget.Card {
-	// Service controls
-	g.startButton = widget.NewButtonWithIcon("Start Service", theme.MediaPlayIcon(), g.startTunnel)
-	g.stopButton = widget.NewButtonWithIcon("Stop Service", theme.MediaStopIcon(), g.stopTunnel)
-	g.stopButton.Disable()
-
-	// Device controls
-	g.refreshButton = widget.NewButtonWithIcon("Refresh Devices", theme.ViewRefreshIcon(), g.refreshDevices)
-	g.pairButton = widget.NewButtonWithIcon("Pair Device", theme.ConfirmIcon(), g.pairDevice)
-	g.pairButton.Disable()
-	deleteButton := widget.NewButtonWithIcon("Delete All Devices", theme.DeleteIcon(), g.deleteAllDevices)
-
-	// Button styling
-	g.startButton.Importance = widget.HighImportance
-	g.stopButton.Importance = widget.MediumImportance
-	g.pairButton.Importance = widget.HighImportance
-	deleteButton.Importance = widget.DangerImportance
-
-	// Layout buttons
-	tunnelControls := container.NewHBox(g.startButton, g.stopButton)
-	deviceControls := container.NewHBox(g.refreshButton, g.pairButton)
-	deleteControls := container.NewHBox(deleteButton)
-	
-	allControls := container.NewVBox(
-		widget.NewLabel("Service Controls:"),
-		tunnelControls,
-		widget.NewSeparator(),
-		widget.NewLabel("Device Controls:"),
-		deviceControls,
-		widget.NewSeparator(),
-		widget.NewLabel("Danger Zone:"),
-		deleteControls,
-	)
-
-	card := widget.NewCard("Controls", "", allControls)
-	return card
 }
 
 // setupEventHandlers sets up event handlers
 func (g *GUIApp) setupEventHandlers() {
-	// Update tunnel status periodically
-	go g.updateTunnelStatus()
-	
-	// Auto-refresh devices when tunnel is running
-	go g.autoRefreshDevices()
+	// Monitor service and device status
+	go g.monitorPairingFlow()
 }
 
-// updateTunnelStatus updates the tunnel status display
-func (g *GUIApp) updateTunnelStatus() {
-	ticker := time.NewTicker(1 * time.Second)
+// monitorPairingFlow monitors the service and device status
+func (g *GUIApp) monitorPairingFlow() {
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		if g.tunnelManager.IsRunning() {
-			g.tunnelStatus.Set("Service Status: Running")
-			g.statusLabel.SetText("🟢 Service: Running")
-			g.startButton.Disable()
-			g.stopButton.Enable()
-			// Update instruction based on current state
-			g.updateInstructionBasedOnState()
-		} else {
-			g.tunnelStatus.Set("Service Status: Stopped")
-			g.statusLabel.SetText("🔴 Service: Stopped")
-			g.startButton.Enable()
-			g.stopButton.Disable()
-			g.pairButton.Disable()
-			// Reset instruction when service stops
-			g.resetAllSteps()
+		// Only monitor if we're in an active state
+		if g.currentState == StateServiceStarting || g.currentState == StateWaitingForDevice {
+			if g.tunnelManager.IsRunning() {
+				// Service is running, check for devices
+				if g.currentState == StateServiceStarting {
+					g.currentState = StateWaitingForDevice
+					g.updateUIForState()
+				}
+
+				// Check for devices
+				go g.checkForDevices()
+			}
 		}
 	}
 }
 
-// updateCurrentInstruction updates the current instruction for the user
-func (g *GUIApp) updateCurrentInstruction(instruction string) {
-	g.pairingStatusLabel.SetText(instruction)
-}
+// checkForDevices checks for connected devices
+func (g *GUIApp) checkForDevices() {
+	if g.currentState != StateWaitingForDevice {
+		return
+	}
 
-// updateInstructionBasedOnState determines the correct instruction based on current state
-func (g *GUIApp) updateInstructionBasedOnState() {
-	// Check if we already have a final status message (success or failure)
-	currentText := g.pairingStatusLabel.Text
-	if strings.Contains(currentText, "✅ All done!") || strings.Contains(currentText, "⚠️ Device paired but failed") {
-		// Don't change the final status message
-		return
-	}
-	
-	// Check if service is running
-	if !g.tunnelManager.IsRunning() {
-		g.updateCurrentInstruction("Starting service...")
-		return
-	}
-	
-	// Service is running, check if we have devices
 	tunnels, err := g.tunnelManager.ListTunnels()
 	if err != nil || len(tunnels) == 0 {
-		g.updateCurrentInstruction("Connect device")
 		return
 	}
-	
-	// We have devices, show that we're auto-pairing
-	if g.selectedDevice == nil {
-		g.updateCurrentInstruction("Device found, auto-pairing...")
-		return
+
+	// Device found! Update UI and start pairing
+	firstTunnel := tunnels[0]
+	deviceName := g.getDeviceName(firstTunnel.Udid)
+	if deviceName == "" {
+		deviceName = fmt.Sprintf("iPhone (%s...)", firstTunnel.Udid[:8])
 	}
-	
-	// Device is selected, show pairing status
-	g.updateCurrentInstruction("Pairing device...")
-}
 
-// resetAllSteps resets the instruction
-func (g *GUIApp) resetAllSteps() {
-	g.updateCurrentInstruction("Starting service...")
-}
+	g.deviceNameLabel.SetText(fmt.Sprintf("Device detected: %s", deviceName))
+	g.deviceNameLabel.Show()
 
-// autoRefreshDevices automatically refreshes device list when tunnel is running
-func (g *GUIApp) autoRefreshDevices() {
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
+	// Store selected device
+	g.selectedDevice = &firstTunnel
 
-	for range ticker.C {
-		if g.tunnelManager.IsRunning() {
-			g.refreshDevices()
-		}
-	}
+	// Transition to pairing state
+	g.currentState = StatePairing
+	g.updateUIForState()
+
+	// Start pairing after a short delay
+	time.Sleep(1 * time.Second)
+	go g.pairDevice()
 }
 
 // startTunnel starts the tunnel service
 func (g *GUIApp) startTunnel() {
-	g.progressBar.Show()
-	g.progressBar.SetValue(0.3)
-	
-	// Show status update
-	g.statusLabel.SetText("Starting service...")
-	
-	go func() {
-		err := g.tunnelManager.StartTunnel()
-		if err != nil {
-			g.progressBar.Hide()
-			g.statusLabel.SetText("Service Status: Failed to start")
-			dialog.ShowError(fmt.Errorf("Failed to start service: %v", err), g.window)
-			return
-		}
-		
-		g.progressBar.SetValue(1.0)
-		g.statusLabel.SetText("Service Status: Starting...")
-		time.Sleep(500 * time.Millisecond)
-		g.progressBar.Hide()
-		
-		// Auto-refresh devices after starting service
-		time.Sleep(2 * time.Second)
-		g.refreshDevices()
-		
-		// No popup - just update the instruction automatically
-	}()
+	err := g.tunnelManager.StartTunnel()
+	if err != nil {
+		g.currentState = StateError
+		g.updateUIForState()
+		g.detailsLabel.SetText(fmt.Sprintf("Error: %v", err))
+		g.detailsLabel.Show()
+	}
 }
 
 // stopTunnel stops the tunnel service
 func (g *GUIApp) stopTunnel() {
 	g.tunnelManager.StopTunnel()
-	g.deviceList.Set([]string{})
 	g.selectedDevice = nil
-}
-
-// refreshDevices refreshes the device list
-func (g *GUIApp) refreshDevices() {
-	if !g.tunnelManager.IsRunning() {
-		return
-	}
-
-	go func() {
-		tunnels, err := g.tunnelManager.ListTunnels()
-		if err != nil {
-			debugLog("Error listing tunnels: %v", err)
-			return
-		}
-
-		deviceStrings := make([]string, len(tunnels))
-		for i, tunnel := range tunnels {
-			// Try to get device name for better display
-			deviceName := g.getDeviceName(tunnel.Udid)
-			if deviceName != "" {
-				deviceStrings[i] = fmt.Sprintf("📱 %s | %s | Port: %d", 
-					deviceName, tunnel.Address, tunnel.RsdPort)
-			} else {
-				deviceStrings[i] = fmt.Sprintf("📱 iPhone (%s) | %s | Port: %d", 
-					tunnel.Udid[:8]+"...", tunnel.Address, tunnel.RsdPort)
-			}
-		}
-
-		g.deviceList.Set(deviceStrings)
-		
-		// Auto-select first device if none selected and devices are available
-		if g.selectedDevice == nil && len(tunnels) > 0 {
-			// Auto-select the first device
-			firstDeviceStr := deviceStrings[0]
-			g.parseSelectedDevice(firstDeviceStr)
-			
-			// Auto-start pairing process
-			go func() {
-				time.Sleep(1 * time.Second) // Small delay to let UI update
-				g.pairDevice()
-			}()
-		}
-		
-		// Update instruction based on current state
-		g.updateInstructionBasedOnState()
-	}()
 }
 
 // getDeviceName attempts to get the device name from lockdown
@@ -690,43 +1058,46 @@ func (g *GUIApp) deleteDevice(deviceID int) bool {
 // deleteAllDevices deletes all devices from the Balena endpoint
 func (g *GUIApp) deleteAllDevices() {
 	// Show confirmation dialog
-	dialog.ShowConfirm("Delete All Devices", 
+	dialog.ShowConfirm("Delete All Devices",
 		"Are you sure you want to delete ALL devices? This action cannot be undone.",
 		func(confirmed bool) {
 			if !confirmed {
 				return
 			}
-			
+
+			// Show progress dialog
+			progressDialog := dialog.NewProgress("Deleting Devices", "Fetching device list...", g.window)
+			progressDialog.Show()
+
 			go func() {
-				g.updateCurrentInstruction("Fetching device list...")
-				
+				defer progressDialog.Hide()
+
 				deviceIDs := g.fetchAllDeviceIDs()
-				
+
 				if len(deviceIDs) == 0 {
 					// Fallback: delete device IDs 0-20
 					debugLog("[!] Falling back to deleting device IDs 0–20...")
-					g.updateCurrentInstruction("Deleting devices 0-20 (fallback)...")
+					progressDialog.SetValue(0.5)
 					for deviceID := 0; deviceID <= 20; deviceID++ {
 						g.deleteDevice(deviceID)
 					}
-					g.updateCurrentInstruction("Fallback deletion completed")
-					dialog.ShowInformation("Delete Complete", 
+					progressDialog.SetValue(1.0)
+					dialog.ShowInformation("Delete Complete",
 						"Attempted to delete devices 0-20 (fallback mode).", g.window)
 					return
 				}
-				
-				g.updateCurrentInstruction(fmt.Sprintf("Deleting %d devices...", len(deviceIDs)))
-				
+
 				successCount := 0
-				for _, deviceID := range deviceIDs {
+				total := len(deviceIDs)
+				for i, deviceID := range deviceIDs {
 					if g.deleteDevice(deviceID) {
 						successCount++
 					}
+					progressDialog.SetValue(float64(i+1) / float64(total))
 				}
-				
-				g.updateCurrentInstruction(fmt.Sprintf("Deleted %d/%d devices", successCount, len(deviceIDs)))
-				dialog.ShowInformation("Delete Complete", 
-					fmt.Sprintf("Successfully deleted %d out of %d devices.", successCount, len(deviceIDs)), 
+
+				dialog.ShowInformation("Delete Complete",
+					fmt.Sprintf("Successfully deleted %d out of %d devices.", successCount, total),
 					g.window)
 			}()
 		}, g.window)
@@ -735,105 +1106,99 @@ func (g *GUIApp) deleteAllDevices() {
 // pairDevice pairs with the selected device
 func (g *GUIApp) pairDevice() {
 	if g.selectedDevice == nil {
-		dialog.ShowInformation("No Device Selected", "Please select a device first.", g.window)
+		g.currentState = StateError
+		g.updateUIForState()
+		g.detailsLabel.SetText("No device selected")
 		return
 	}
 
-	// Show pairing progress
-	progressDialog := dialog.NewProgress("Pairing Device", "Please press 'Trust' on your device when prompted...", g.window)
-	progressDialog.Show()
-
 	go func() {
 		defer func() {
-			// Ensure progress dialog is hidden even if panic occurs
+			// Ensure recovery from panics
 			if r := recover(); r != nil {
 				debugLog("Panic in pairing process: %v", r)
-				progressDialog.Hide()
-				dialog.ShowError(fmt.Errorf("pairing process crashed: %v", r), g.window)
+				g.currentState = StateError
+				g.updateUIForState()
+				g.detailsLabel.SetText(fmt.Sprintf("Pairing crashed: %v", r))
 			}
 		}()
-		defer progressDialog.Hide()
 
-		// Step 1: Get device information
-		progressDialog.SetValue(0.1)
-		
+		// Update status: Getting device information
+		g.detailsLabel.SetText("Getting device information...")
+
 		device, err := ios.GetDevice(g.selectedDevice.Udid)
 		if err != nil {
-			dialog.ShowError(fmt.Errorf("failed to get device: %v", err), g.window)
+			g.handlePairingError("Failed to get device", err)
 			return
 		}
 
-		// Step 2: Create pair record manager
-		progressDialog.SetValue(0.2)
-		
-		pm, err := tunnel.NewPairRecordManager(".")
+		// Update status: Creating pair record manager
+		g.detailsLabel.SetText("Initializing pairing...")
+
+		pm, err := tunnel.NewPairRecordManager(g.tunnelManager.RecordsPath)
 		if err != nil {
-			dialog.ShowError(fmt.Errorf("failed to create pair record manager: %v", err), g.window)
+			g.handlePairingError("Failed to create pair record manager", err)
 			return
 		}
 
-		// Step 3: Connect to lockdown
-		progressDialog.SetValue(0.4)
-		
+		// Update status: Connecting to device
+		g.detailsLabel.SetText("Connecting to device...")
+
 		lockdown, err := ios.ConnectLockdownWithSession(device)
 		if err != nil {
-			dialog.ShowError(fmt.Errorf("failed to connect to lockdown: %v", err), g.window)
+			g.handlePairingError("Failed to connect. Please check:\n• USB cable is connected\n• Device is unlocked\n• You tapped Trust on device", err)
 			return
 		}
-		defer func() {
-			lockdown.Close()
-		}()
+		defer lockdown.Close()
 
-		// Step 4: Enable WiFi connections
-		progressDialog.SetValue(0.6)
-		
+		// Update status: Enabling WiFi connections
+		g.detailsLabel.SetText("Enabling WiFi connections...")
+
 		err = lockdown.SetValueForDomain("EnableWifiConnections", "com.apple.mobile.wireless_lockdown", true)
 		if err != nil {
-			dialog.ShowError(fmt.Errorf("failed to enable WiFi: %v", err), g.window)
+			g.handlePairingError("Failed to enable WiFi", err)
 			return
 		}
 
-		// Step 5: Get tunnel info
-		progressDialog.SetValue(0.7)
-		
+		// Update status: Getting tunnel information
+		g.detailsLabel.SetText("Getting tunnel information...")
+
 		info, err := tunnel.TunnelInfoForDevice(device.Properties.SerialNumber, ios.HttpApiHost(), 28100)
 		if err != nil {
-			dialog.ShowError(fmt.Errorf("failed to get tunnel info: %v", err), g.window)
+			g.handlePairingError("Failed to get tunnel info", err)
 			return
 		}
 
 		device.UserspaceTUNPort = info.UserspaceTUNPort
 		device.UserspaceTUN = info.UserspaceTUN
 
-		// Step 6: Set up RSD provider
-		progressDialog.SetValue(0.8)
-		
-		// Validate selected device data before proceeding
+		// Update status: Setting up RSD provider
+		g.detailsLabel.SetText("Setting up RSD provider...")
+
+		// Validate selected device data
 		if g.selectedDevice.Address == "" || g.selectedDevice.RsdPort <= 0 {
-			dialog.ShowError(fmt.Errorf("invalid device data: address=%s, port=%d", g.selectedDevice.Address, g.selectedDevice.RsdPort), g.window)
+			g.handlePairingError("Invalid device data", fmt.Errorf("address=%s, port=%d", g.selectedDevice.Address, g.selectedDevice.RsdPort))
 			return
 		}
-		
+
 		device = deviceWithRsdProvider(device, g.selectedDevice.Udid, g.selectedDevice.Address, g.selectedDevice.RsdPort)
 
-		// Step 7: Perform pairing
-		progressDialog.SetValue(0.9)
-		
+		// Update status: Exchanging certificates
+		g.detailsLabel.SetText("Exchanging certificates...")
+
 		key, err := tunnel.PairAndGetHostKey(g.selectedDevice.Address, device, pm)
 		if err != nil {
-			dialog.ShowError(fmt.Errorf("failed to pair device: %v", err), g.window)
+			g.handlePairingError("Failed to pair device", err)
 			return
 		}
 
-		progressDialog.SetValue(1.0)
+		// Update status: Pairing completed, posting to server
+		g.detailsLabel.SetText("Posting to server...")
 
-		// Update instruction - pairing completed
-		g.updateCurrentInstruction("Device paired! Posting to server...")
-		
 		// Read selfIdentity.plist to extract private and public keys
 		privateKey := ""
 		publicKey := ""
-		plistPath := "./selfIdentity.plist"
+		plistPath := fmt.Sprintf("%s/selfIdentity.plist", g.tunnelManager.RecordsPath)
 		content, err := os.ReadFile(plistPath)
 		if err == nil {
 			var deviceInfo map[string]interface{}
@@ -845,7 +1210,7 @@ func (g *GUIApp) pairDevice() {
 				} else if privKeyStr, ok := deviceInfo["privateKey"].(string); ok {
 					privateKey = privKeyStr
 				}
-				
+
 				// Extract public key
 				if pubKeyData, ok := deviceInfo["publicKey"].([]byte); ok {
 					publicKey = base64.StdEncoding.EncodeToString(pubKeyData)
@@ -854,38 +1219,67 @@ func (g *GUIApp) pairDevice() {
 				}
 			}
 		}
-		
+
 		// Post device information to Balena endpoint
 		balenaSuccess, balenaResponse := g.postToBalena(g.selectedDevice, key, privateKey, publicKey)
-		
-		// Update instruction based on Balena result
+
+		// Update state based on result
 		if balenaSuccess {
-			g.updateCurrentInstruction("✅ All done! Device paired and posted successfully!")
-			g.statusLabel.SetText("🎉 All Steps Completed Successfully!")
+			g.currentState = StateSuccess
+			g.updateUIForState()
 		} else {
-			g.updateCurrentInstruction("⚠️ Device paired but failed to post to server")
-			g.statusLabel.SetText("⚠️ Device Paired but Balena Post Failed")
+			g.currentState = StateError
+			g.updateUIForState()
+			g.detailsLabel.SetText(fmt.Sprintf("Device paired but server post failed:\n%s", balenaResponse))
 		}
-		
-		// Close tunnel after pairing is complete
-		go func() {
-			time.Sleep(2 * time.Second) // Small delay to show final status
-			g.tunnelManager.StopTunnel()
-			g.statusLabel.SetText("🔴 Service: Stopped")
-		}()
-		
-		// Show success dialog with key information and Balena status
-		var title, message string
+
+		// Close tunnel after completion
+		time.Sleep(2 * time.Second)
+		g.tunnelManager.StopTunnel()
+
+		// Show simple final dialog (no technical details)
 		if balenaSuccess {
-			title = "🎉 Pairing & Balena Success!"
-			message = fmt.Sprintf("✅ Device has been successfully paired!\n✅ Device information posted to Balena successfully!\n\nHost Key: %s\n\nBalena Response: %s", key, balenaResponse)
+			dialog.ShowInformation("Success",
+				"Device paired and registered successfully.\n\nYou can now close this window or pair another device.",
+				g.window)
 		} else {
-			title = "⚠️ Pairing Success, Balena Failed"
-			message = fmt.Sprintf("✅ Device has been successfully paired!\n❌ Failed to post to Balena endpoint.\n\nHost Key: %s\n\nError Details: %s", key, balenaResponse)
+			dialog.ShowInformation("Pairing Completed",
+				"Device paired but server communication failed.\n\nMake sure your computer is connected to the EnvoidDirect network.",
+				g.window)
 		}
-		
-		dialog.ShowInformation(title, message, g.window)
 	}()
+}
+
+// handlePairingError handles errors during pairing
+func (g *GUIApp) handlePairingError(userMessage string, err error) {
+	debugLog("Pairing error: %s - %v", userMessage, err)
+	g.currentState = StateError
+	g.updateUIForState()
+	g.instructionLabel.SetText(userMessage)
+
+	if err != nil {
+		// Create user-friendly error message
+		errorMsg := err.Error()
+
+		// Detect common error patterns and provide helpful messages
+		if strings.Contains(errorMsg, "failed to pair device") ||
+		   strings.Contains(errorMsg, "setupSessionKey") ||
+		   strings.Contains(errorMsg, "pairingData") {
+			g.detailsLabel.SetText("Please ensure:\n• Device is unlocked\n• You tapped 'Trust' on device\n• Try unplugging and reconnecting")
+		} else if strings.Contains(errorMsg, "connection refused") {
+			g.detailsLabel.SetText("Connection failed. Please check USB cable.")
+		} else if strings.Contains(errorMsg, "timeout") {
+			g.detailsLabel.SetText("Connection timeout. Please try again.")
+		} else {
+			// Truncate long technical errors
+			maxLen := 100
+			if len(errorMsg) > maxLen {
+				errorMsg = errorMsg[:maxLen] + "..."
+			}
+			g.detailsLabel.SetText(fmt.Sprintf("Error: %s", errorMsg))
+		}
+	}
+	g.detailsLabel.Show()
 }
 
 

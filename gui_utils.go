@@ -1,3 +1,6 @@
+//go:build gui
+// +build gui
+
 package main
 
 import (
@@ -5,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,7 +18,7 @@ import (
 
 // TunnelManager handles tunnel service operations
 type TunnelManager struct {
-	recordsPath    string
+	RecordsPath    string
 	tunnelInfoPort int
 	tunnelInfoHost string
 	userspaceTUN   bool
@@ -23,11 +27,27 @@ type TunnelManager struct {
 	running        bool
 }
 
+// Cleanup removes all temporary pairing files
+func (tm *TunnelManager) Cleanup() error {
+	if tm.RecordsPath == "" {
+		return nil
+	}
+
+	log.Printf("Cleaning up temporary files at: %s", tm.RecordsPath)
+
+	// Remove entire temporary directory
+	if err := os.RemoveAll(tm.RecordsPath); err != nil {
+		return fmt.Errorf("failed to cleanup temporary files: %w", err)
+	}
+
+	return nil
+}
+
 // NewTunnelManager creates a new tunnel manager
 func NewTunnelManager(recordsPath string, tunnelInfoPort int, tunnelInfoHost string, userspaceTUN bool) *TunnelManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &TunnelManager{
-		recordsPath:    recordsPath,
+		RecordsPath:    recordsPath,
 		tunnelInfoPort: tunnelInfoPort,
 		tunnelInfoHost: tunnelInfoHost,
 		userspaceTUN:   userspaceTUN,
@@ -44,21 +64,14 @@ func (tm *TunnelManager) StartTunnel() error {
 	}
 
 	go func() {
-		filePath := "selfIdentity.plist"
-
-		// Check if the file exists
-		if _, err := os.Stat(filePath); err == nil {
-			// File exists, so delete it
-			err := os.Remove(filePath)
-			if err != nil {
-				fmt.Printf("Error deleting file: %v\n", err)
-				return // Exit the program if deletion fails
-			}
-			fmt.Printf("File '%s' deleted successfully.\n", filePath)
-		} else {
-			fmt.Printf("File '%s' does not exist.\n", filePath)
+		// Ensure peers directory exists
+		peersDir := filepath.Join(tm.RecordsPath, "peers")
+		if err := os.MkdirAll(peersDir, 0755); err != nil {
+			log.Printf("Failed to create peers directory: %v", err)
+			return
 		}
-		pm, err := tunnel.NewPairRecordManager(tm.recordsPath)
+
+		pm, err := tunnel.NewPairRecordManager(tm.RecordsPath)
 		if err != nil {
 			log.Printf("Could not create pair record manager: %v", err)
 			return
@@ -107,7 +120,12 @@ func (tm *TunnelManager) StartTunnel() error {
 // StopTunnel stops the tunnel service
 func (tm *TunnelManager) StopTunnel() {
 	if tm.running {
+		// Cancel the context
 		tm.cancel()
+
+		// Wait a moment for graceful shutdown
+		time.Sleep(500 * time.Millisecond)
+
 		// Create a new context for next time
 		tm.ctx, tm.cancel = context.WithCancel(context.Background())
 		tm.running = false

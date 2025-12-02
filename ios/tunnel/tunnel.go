@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"os/exec"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/danielpaulus/go-ios/ios"
@@ -268,6 +269,15 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, erro
 func runCmd(cmd *exec.Cmd) error {
 	buf := new(bytes.Buffer)
 	cmd.Stderr = buf
+
+	// Hide console window on Windows
+	if runtime.GOOS == "windows" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			HideWindow:    true,
+			CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+		}
+	}
+
 	err := cmd.Run()
 	if err != nil {
 		return fmt.Errorf("runCmd: failed to exeute command (stderr: %s): %w", buf.String(), err)

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(export:*)",
+      "Bash(export CGO_ENABLED=1)",
+      "Bash(export CC=gcc)",
+      "Bash(\"/c/Program Files/Go/bin/go.exe\" build -o pairing-assistant-gui.exe gui_main.go gui.go gui_utils.go)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
