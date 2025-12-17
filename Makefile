@@ -61,7 +61,7 @@ GOEXEC=$(strip $(foreach v,OS ARCH,$(and $($v),GO$v=$($v) )) go)
 autotrust-build:
 	@echo "Building autotrust for $(GOOS)/$(GOARCH)..."
 	@mkdir -p $(AUTOTRUST_DIST_DIR)
-	@$(GOEXEC) build -o $(AUTOTRUST_BINARY_NAME) ./autotrust.go
+	@$(GOEXEC) build -o $(AUTOTRUST_BINARY_NAME) ./cmd/autotrust
 	@echo "✓ Built: $(AUTOTRUST_BINARY_NAME)"
 
 # Build autotrust for all platforms
@@ -80,7 +80,7 @@ autotrust-build-all:
 		echo "  Building $$os/$$arch → $$output"; \
 		GOOS=$$os GOARCH=$$arch $(GOEXEC) build \
 			-ldflags "-s -w" \
-			-o "$$output" ./autotrust.go || exit 1; \
+			-o "$$output" ./cmd/autotrust || exit 1; \
 		if [ -f "$$output" ]; then \
 			size=$$(ls -lh "$$output" | awk '{print $$5}'); \
 			echo "    ✓ Success ($$size)"; \
@@ -136,4 +136,69 @@ autotrust-help:
 	@echo ""
 	@echo "Cross-platform build example:"
 	@echo "  make autotrust-build-all    # Builds for Linux/macOS/Windows x86_64/ARM64"
+
+# ============================================================================
+# NCM CROSS-PLATFORM BUILD
+# ============================================================================
+
+NCM_DIST_DIR=./dist/ncm
+
+# Cross-platform targets for NCM
+NCM_TARGETS = \
+	linux/amd64 \
+	linux/arm64 \
+	darwin/amd64 \
+	darwin/arm64 \
+	windows/amd64
+
+.PHONY: ncm-build ncm-build-all ncm-clean
+
+# Build NCM for current platform
+ncm-build:
+	@echo "Building go-ncm for current platform..."
+	@mkdir -p $(NCM_DIST_DIR)
+	@cd ncm && CGO_ENABLED=1 go build -ldflags "-s -w" -o ../$(NCM_DIST_DIR)/go-ncm ../cmd/cdc-ncm/main.go
+	@echo "✓ Built: $(NCM_DIST_DIR)/go-ncm"
+
+# Build NCM for all platforms
+ncm-build-all:
+	@echo "╔════════════════════════════════════════════════════════════════╗"
+	@echo "║      Building go-ncm for all platforms                        ║"
+	@echo "╚════════════════════════════════════════════════════════════════╝"
+	@mkdir -p $(NCM_DIST_DIR)
+	@for target in $(NCM_TARGETS); do \
+		os=$$(echo $$target | cut -d/ -f1); \
+		arch=$$(echo $$target | cut -d/ -f2); \
+		output=$(NCM_DIST_DIR)/go-ncm-$$os-$$arch; \
+		if [ "$$os" = "windows" ]; then \
+			output="$$output.exe"; \
+		fi; \
+		echo "  Building $$os/$$arch → $$output"; \
+		cd ncm && CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build \
+			-ldflags "-s -w" \
+			-o ../$$output ../cmd/cdc-ncm/main.go || exit 1; \
+		cd ..; \
+		if [ -f "$$output" ]; then \
+			size=$$(ls -lh "$$output" | awk '{print $$5}'); \
+			echo "    ✓ Success ($$size)"; \
+		else \
+			echo "    ✗ Failed"; \
+			exit 1; \
+		fi; \
+	done
+	@echo ""
+	@echo "╔════════════════════════════════════════════════════════════════╗"
+	@echo "║                    BUILD SUMMARY                              ║"
+	@echo "╚════════════════════════════════════════════════════════════════╝"
+	@echo ""
+	@echo "Built binaries:"
+	@ls -lh $(NCM_DIST_DIR)/go-ncm-* | awk '{printf "  %-50s %s\n", $$9, $$5}'
+	@echo ""
+	@echo "Total size: $$(du -sh $(NCM_DIST_DIR) | awk '{print $$1}')"
+
+# Clean NCM builds
+ncm-clean:
+	@echo "Cleaning go-ncm builds..."
+	@rm -rf $(NCM_DIST_DIR)
+	@echo "✓ Cleaned"
 
