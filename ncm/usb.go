@@ -24,9 +24,12 @@ const PID_APPLE_SILICON_RESTORE_LOW = 0x1901
 const PID_APPLE_SILICON_RESTORE_MAX = 0x1905
 
 var allocatedDevices = sync.Map{}
+var failedDevices = sync.Map{} // tracks devices that failed with cooldown
 var serialToInterface = map[string]string{}
 var deviceLock = sync.Mutex{}
 var deviceCounter = 0
+
+const deviceCooldownDuration = 5 * time.Second
 
 func Start(c chan os.Signal) error {
 	ctx := gousb.NewContext()
@@ -80,16 +83,28 @@ func checkDevices(ctx *gousb.Context) {
 		}
 		serial = strings.Trim(serial, "\x00")
 		
-		// Skip if already being handled
+		// Skip if already being handled successfully
 		if _, exists := allocatedDevices.Load(serial); exists {
 			d.Close()
 			continue
+		}
+		
+		// Skip if device recently failed (cooldown)
+		if failTime, exists := failedDevices.Load(serial); exists {
+			if time.Since(failTime.(time.Time)) < deviceCooldownDuration {
+				d.Close()
+				continue
+			}
+			// Cooldown expired, remove from failed list and retry
+			failedDevices.Delete(serial)
 		}
 		
 		go func(d *gousb.Device, serial string) {
 			err := handleDevice(d, serial)
 			if err != nil {
 				slog.Error("failed opening network adapter for device", "device", d.String(), "err", err)
+				// Mark as failed with timestamp for cooldown
+				failedDevices.Store(serial, time.Now())
 			}
 		}(d, serial)
 	}
@@ -114,88 +129,46 @@ func interfaceName(serial string) string {
 	return serialToInterface[serial]
 }
 
-// tryConfigsInParallel tries to activate configs in parallel for faster discovery
-// Returns the first successful config that has the NCM interface
-func tryConfigsInParallel(device *gousb.Device, serial string) (*gousb.Config, error) {
-	// Get all available config numbers from the map keys (already 1-indexed)
-	configNums := make([]int, 0, len(device.Desc.Configs))
-	for configNum := range device.Desc.Configs {
-		configNums = append(configNums, configNum) // Map keys are already config numbers
-	}
+// tryNCMConfig tries to get the NCM config (config 5) directly
+// If config 5 doesn't exist, falls back to trying all configs
+func tryNCMConfig(device *gousb.Device, serial string) (*gousb.Config, error) {
+	// NCM is always config 5 on iOS devices
+	const ncmConfigNum = 5
 	
-	if len(configNums) == 0 {
-		return nil, fmt.Errorf("no configs available for device %s", serial)
-	}
-	
-	type configResult struct {
-		cfg *gousb.Config
-		num int
-		err error
-	}
-	
-	// Buffered channel to receive all results
-	resultChan := make(chan configResult, len(configNums))
-	
-	// Try each config in a goroutine
-	for _, configNum := range configNums {
-		go func(cfgNum int) {
-			slog.Debug("trying config", "config_num", cfgNum, "serial", serial)
-			cfg, err := device.Config(cfgNum)
-			if err != nil {
-				slog.Debug("config attempt failed", "config_num", cfgNum, "serial", serial, "err", err)
-				resultChan <- configResult{nil, cfgNum, err}
-				return
-			}
-			
-			// Check if this config has the NCM interface (class 10, 2 endpoints)
-			if hasNCMInterface(cfg) {
-				slog.Info("found NCM interface", "config_num", cfgNum, "serial", serial)
-				resultChan <- configResult{cfg, cfgNum, nil}
-			} else {
-				slog.Debug("config has no NCM interface", "config_num", cfgNum, "serial", serial)
-				cfg.Close()
-				resultChan <- configResult{nil, cfgNum, fmt.Errorf("config %d has no NCM interface", cfgNum)}
-			}
-		}(configNum)
-	}
-	
-	// Collect results with timeout
-	var foundConfig *gousb.Config
-	var lastErr error
-	timeout := time.After(10 * time.Second)
-	
-	for i := 0; i < len(configNums); i++ {
-		select {
-		case result := <-resultChan:
-			if result.cfg != nil {
-				if foundConfig == nil {
-					// First successful config - keep it
-					foundConfig = result.cfg
-					slog.Info("using NCM config", "config_num", result.num, "serial", serial)
-				} else {
-					// Already have a config - close this one
-					result.cfg.Close()
-				}
-			} else if result.err != nil {
-				lastErr = result.err
-			}
-		case <-timeout:
-			slog.Warn("timeout waiting for config results", "serial", serial)
-			if foundConfig != nil {
-				return foundConfig, nil
-			}
-			return nil, fmt.Errorf("timeout trying configs for device %s", serial)
+	// Check if config 5 exists
+	if _, hasConfig5 := device.Desc.Configs[ncmConfigNum]; hasConfig5 {
+		slog.Debug("trying NCM config 5", "serial", serial)
+		cfg, err := device.Config(ncmConfigNum)
+		if err != nil {
+			return nil, fmt.Errorf("failed to activate config 5: %w", err)
 		}
+		
+		if hasNCMInterface(cfg) {
+			slog.Info("found NCM interface on config 5", "serial", serial)
+			return cfg, nil
+		}
+		
+		cfg.Close()
+		return nil, fmt.Errorf("config 5 exists but has no NCM interface")
 	}
 	
-	if foundConfig != nil {
-		return foundConfig, nil
+	// Config 5 doesn't exist - try other configs (fallback)
+	slog.Debug("config 5 not available, trying other configs", "serial", serial)
+	for configNum := range device.Desc.Configs {
+		cfg, err := device.Config(configNum)
+		if err != nil {
+			slog.Debug("config attempt failed", "config_num", configNum, "serial", serial, "err", err)
+			continue
+		}
+		
+		if hasNCMInterface(cfg) {
+			slog.Info("found NCM interface", "config_num", configNum, "serial", serial)
+			return cfg, nil
+		}
+		cfg.Close()
 	}
 	
-	if lastErr != nil {
-		return nil, fmt.Errorf("handleDevice: failed to find NCM config for device %s: %w", serial, lastErr)
-	}
-	return nil, fmt.Errorf("handleDevice: no NCM config found for device %s", serial)
+	return nil, fmt.Errorf("no NCM config found for device %s", serial)
 }
 
 // hasNCMInterface checks if a config has a valid NCM interface
@@ -224,7 +197,8 @@ func handleDevice(device *gousb.Device, serial string) error {
 		slog.Info("device already handled", "serial", serial)
 		return nil
 	}
-	defer allocatedDevices.Delete(serial)
+	// Note: We delete from allocatedDevices only when the device disconnects (ncmIOCopy returns)
+	// This prevents infinite retry loops on failure
 	slog.Info("got device", slog.String("serial", serial))
 
 	activeConfig, err := device.ActiveConfigNum()
@@ -254,8 +228,8 @@ func handleDevice(device *gousb.Device, serial string) error {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	// Try all available configs in parallel to find the NCM one
-	cfg, err := tryConfigsInParallel(device, serial)
+	// Try to get the NCM config (config 5 on iOS devices)
+	cfg, err := tryNCMConfig(device, serial)
 	if err != nil {
 		return err
 	}
@@ -332,6 +306,11 @@ func handleDevice(device *gousb.Device, serial string) error {
 	//blocks until the device disconnects or the adapter fails for some reason
 	err = ncmIOCopy(out, inStream, ifce, serial)
 	slog.Info("stopping interface for device", "serial", serial)
+	
+	// Device disconnected or failed - remove from tracking so it can be re-handled
+	allocatedDevices.Delete(serial)
+	failedDevices.Delete(serial) // Clear any failed state
+	
 	if err != nil {
 		slog.Error("failed to copy data", "err", err, "serial", serial)
 	}
