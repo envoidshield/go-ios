@@ -100,6 +100,95 @@ func interfaceName(serial string) string {
 	return serialToInterface[serial]
 }
 
+// tryConfigsInParallel tries to activate configs in parallel for faster discovery
+// Returns the first successful config that has the NCM interface
+func tryConfigsInParallel(device *gousb.Device, serial string) (*gousb.Config, error) {
+	// Get all available config numbers
+	configNums := make([]int, 0, len(device.Desc.Configs))
+	for i := range device.Desc.Configs {
+		configNums = append(configNums, i+1) // Config numbers are 1-indexed
+	}
+	
+	// Channel to receive the first successful config
+	resultChan := make(chan *gousb.Config, 1)
+	errChan := make(chan error, len(configNums))
+	wg := sync.WaitGroup{}
+	
+	// Try each config in a goroutine
+	for _, configNum := range configNums {
+		wg.Add(1)
+		go func(cfgNum int) {
+			defer wg.Done()
+			
+			slog.Info("trying config in parallel", "config_num", cfgNum, "serial", serial)
+			cfg, err := device.Config(cfgNum)
+			if err != nil {
+				slog.Debug("config attempt failed", "config_num", cfgNum, "serial", serial, "err", err)
+				errChan <- err
+				return
+			}
+			
+			// Check if this config has the NCM interface (class 10, 2 endpoints)
+			if hasNCMInterface(cfg) {
+				slog.Info("found NCM interface", "config_num", cfgNum, "serial", serial)
+				select {
+				case resultChan <- cfg:
+					// Successfully sent config to result channel
+				default:
+					// Another goroutine already found a config, close this one
+					cfg.Close()
+				}
+			} else {
+				slog.Debug("config has no NCM interface", "config_num", cfgNum, "serial", serial)
+				cfg.Close()
+				errChan <- fmt.Errorf("config %d has no NCM interface", cfgNum)
+			}
+		}(configNum)
+	}
+	
+	// Wait for all goroutines to finish or first success
+	go func() {
+		wg.Wait()
+		close(errChan)
+	}()
+	
+	// Check if we got a successful config
+	select {
+	case cfg := <-resultChan:
+		if cfg != nil {
+			return cfg, nil
+		}
+	case <-time.After(10 * time.Second):
+		return nil, fmt.Errorf("timeout trying configs for device %s", serial)
+	}
+	
+	// If no config found, collect errors
+	var lastErr error
+	for err := range errChan {
+		if err != nil {
+			lastErr = err
+		}
+	}
+	
+	if lastErr != nil {
+		return nil, fmt.Errorf("handleDevice: failed to find NCM config for device %s with err %w", serial, lastErr)
+	}
+	return nil, fmt.Errorf("handleDevice: no NCM config found for device %s", serial)
+}
+
+// hasNCMInterface checks if a config has a valid NCM interface
+func hasNCMInterface(cfg *gousb.Config) bool {
+	for _, iface := range cfg.Desc.Interfaces {
+		for _, alt := range iface.AltSettings {
+			// NCM: class 10, subclass 0, with 2 endpoints (IN and OUT)
+			if alt.Class == 10 && alt.SubClass == 0 && len(alt.Endpoints) == 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // handleDevice checks if the device has 5 usb configurations.
 // USBMUXD should make sure they are already enabled. Without doing anything devices usually have 4.
 // The 5th one should be the ncm driver. Then finds endpoints for the ncm network device, starts a virtual
@@ -143,9 +232,10 @@ func handleDevice(device *gousb.Device) error {
 		}
 	}
 
-	cfg, err := device.Config(5)
+	// Try all available configs in parallel to find the NCM one
+	cfg, err := tryConfigsInParallel(device, serial)
 	if err != nil {
-		return fmt.Errorf("handleDevice: failed activating config for device %s with err %w", serial, err)
+		return err
 	}
 	defer closeWithLog("config "+serial, cfg.Close)
 	slog.Info("got config", slog.String("config", cfg.String()), "serial", serial)
