@@ -89,9 +89,6 @@ jobs:
           # Linux AMD64 (native on ubuntu-latest)
           - os: ubuntu-latest
             suffix: linux-amd64
-          # macOS Intel (native on macos-13)
-          - os: macos-13
-            suffix: darwin-amd64
           # macOS ARM64 (native on macos-latest which is ARM64)
           - os: macos-latest
             suffix: darwin-arm64
