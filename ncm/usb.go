@@ -223,9 +223,12 @@ func handleDevice(device *gousb.Device, serial string) error {
 			return fmt.Errorf("handleDevice: failed sending control2 for device %s with err %w", serial, err)
 		}
 		
-		// Wait for device to re-enumerate with new config
-		slog.Debug("waiting for device re-enumeration", "serial", serial)
-		time.Sleep(500 * time.Millisecond)
+		// Control commands cause device to reset and re-enumerate with new USB address
+		// We MUST close this device handle and return - the next poll cycle will 
+		// pick up the re-enumerated device with config 5 available
+		slog.Info("NCM config enabled, device will re-enumerate", "serial", serial)
+		allocatedDevices.Delete(serial) // Allow re-detection
+		return nil // Return success - device will be re-detected with 5 configs
 	}
 
 	// Try to get the NCM config (config 5 on iOS devices)
