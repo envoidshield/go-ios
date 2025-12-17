@@ -137,7 +137,18 @@ func tryNCMConfig(device *gousb.Device, serial string) (*gousb.Config, error) {
 	
 	// Check if config 5 exists
 	if _, hasConfig5 := device.Desc.Configs[ncmConfigNum]; hasConfig5 {
-		slog.Debug("trying NCM config 5", "serial", serial)
+		// Check if config 5 is already active - if so, just use it
+		activeConfig, err := device.ActiveConfigNum()
+		if err != nil {
+			slog.Debug("couldn't get active config", "err", err, "serial", serial)
+		}
+		
+		if activeConfig == ncmConfigNum {
+			slog.Debug("config 5 already active, getting handle", "serial", serial)
+		} else {
+			slog.Debug("switching to config 5", "from", activeConfig, "serial", serial)
+		}
+		
 		cfg, err := device.Config(ncmConfigNum)
 		if err != nil {
 			return nil, fmt.Errorf("failed to activate config 5: %w", err)
@@ -191,11 +202,9 @@ func hasNCMInterface(cfg *gousb.Config) bool {
 func handleDevice(device *gousb.Device, serial string) error {
 	defer closeWithLog("device "+device.String(), device.Close)
 	
-	// Enable auto-detach of kernel drivers (e.g., AppleUSBNCM on macOS)
-	// This allows us to claim interfaces that the kernel might have claimed
-	if err := device.SetAutoDetach(true); err != nil {
-		slog.Debug("SetAutoDetach failed (may not be supported)", "err", err, "serial", serial)
-	}
+	// NOTE: We do NOT use SetAutoDetach(true) because it tries to detach
+	// ALL interfaces including protected system interfaces (interface 0),
+	// which fails on macOS with error -99.
 	
 	updateInterface(serial)
 	_, loaded := allocatedDevices.LoadOrStore(serial, true)
