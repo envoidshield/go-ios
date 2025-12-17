@@ -24,12 +24,9 @@ const PID_APPLE_SILICON_RESTORE_LOW = 0x1901
 const PID_APPLE_SILICON_RESTORE_MAX = 0x1905
 
 var allocatedDevices = sync.Map{}
-var failedDevices = sync.Map{} // tracks devices that failed with cooldown
 var serialToInterface = map[string]string{}
 var deviceLock = sync.Mutex{}
 var deviceCounter = 0
-
-const deviceCooldownDuration = 5 * time.Second
 
 func Start(c chan os.Signal) error {
 	ctx := gousb.NewContext()
@@ -75,38 +72,12 @@ func checkDevices(ctx *gousb.Context) {
 	}
 	slog.Debug("device list", "length", len(devices))
 	for _, d := range devices {
-		// Check serial BEFORE spawning goroutine to avoid unnecessary goroutines
-		serial, err := d.SerialNumber()
-		if err != nil {
-			d.Close()
-			continue
-		}
-		serial = strings.Trim(serial, "\x00")
-		
-		// Skip if already being handled successfully
-		if _, exists := allocatedDevices.Load(serial); exists {
-			d.Close()
-			continue
-		}
-		
-		// Skip if device recently failed (cooldown)
-		if failTime, exists := failedDevices.Load(serial); exists {
-			if time.Since(failTime.(time.Time)) < deviceCooldownDuration {
-				d.Close()
-				continue
-			}
-			// Cooldown expired, remove from failed list and retry
-			failedDevices.Delete(serial)
-		}
-		
-		go func(d *gousb.Device, serial string) {
-			err := handleDevice(d, serial)
+		go func(d *gousb.Device) {
+			err := handleDevice(d)
 			if err != nil {
 				slog.Error("failed opening network adapter for device", "device", d.String(), "err", err)
-				// Mark as failed with timestamp for cooldown
-				failedDevices.Store(serial, time.Now())
 			}
-		}(d, serial)
+		}(d)
 	}
 }
 
@@ -129,91 +100,25 @@ func interfaceName(serial string) string {
 	return serialToInterface[serial]
 }
 
-// tryNCMConfig tries to get the NCM config (config 5) directly
-// If config 5 doesn't exist, falls back to trying all configs
-func tryNCMConfig(device *gousb.Device, serial string) (*gousb.Config, error) {
-	// NCM is always config 5 on iOS devices
-	const ncmConfigNum = 5
-	
-	// Check if config 5 exists
-	if _, hasConfig5 := device.Desc.Configs[ncmConfigNum]; hasConfig5 {
-		// Check if config 5 is already active - if so, just use it
-		activeConfig, err := device.ActiveConfigNum()
-		if err != nil {
-			slog.Debug("couldn't get active config", "err", err, "serial", serial)
-		}
-		
-		if activeConfig == ncmConfigNum {
-			slog.Debug("config 5 already active, getting handle", "serial", serial)
-		} else {
-			slog.Debug("switching to config 5", "from", activeConfig, "serial", serial)
-		}
-		
-		cfg, err := device.Config(ncmConfigNum)
-		if err != nil {
-			return nil, fmt.Errorf("failed to activate config 5: %w", err)
-		}
-		
-		if hasNCMInterface(cfg) {
-			slog.Info("found NCM interface on config 5", "serial", serial)
-			return cfg, nil
-		}
-		
-		cfg.Close()
-		return nil, fmt.Errorf("config 5 exists but has no NCM interface")
-	}
-	
-	// Config 5 doesn't exist - try other configs (fallback)
-	slog.Debug("config 5 not available, trying other configs", "serial", serial)
-	for configNum := range device.Desc.Configs {
-		cfg, err := device.Config(configNum)
-		if err != nil {
-			slog.Debug("config attempt failed", "config_num", configNum, "serial", serial, "err", err)
-			continue
-		}
-		
-		if hasNCMInterface(cfg) {
-			slog.Info("found NCM interface", "config_num", configNum, "serial", serial)
-			return cfg, nil
-		}
-		cfg.Close()
-	}
-	
-	return nil, fmt.Errorf("no NCM config found for device %s", serial)
-}
-
-// hasNCMInterface checks if a config has a valid NCM interface
-func hasNCMInterface(cfg *gousb.Config) bool {
-	for _, iface := range cfg.Desc.Interfaces {
-		for _, alt := range iface.AltSettings {
-			// NCM: class 10, subclass 0, with 2 endpoints (IN and OUT)
-			if alt.Class == 10 && alt.SubClass == 0 && len(alt.Endpoints) == 2 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // handleDevice checks if the device has 5 usb configurations.
 // USBMUXD should make sure they are already enabled. Without doing anything devices usually have 4.
 // The 5th one should be the ncm driver. Then finds endpoints for the ncm network device, starts a virtual
 // TAP network device and starts a read/write loop to send data from virtual network to USB and back
-func handleDevice(device *gousb.Device, serial string) error {
+func handleDevice(device *gousb.Device) error {
 	defer closeWithLog("device "+device.String(), device.Close)
-	
-	// NOTE: We do NOT use SetAutoDetach(true) because it tries to detach
-	// ALL interfaces including protected system interfaces (interface 0),
-	// which fails on macOS with error -99.
-	
+	serial, err := device.SerialNumber()
+	if err != nil {
+		slog.Info("failed to get serial" + device.String())
+		return fmt.Errorf("handleDevice: failed to get serial for device %s with err %w", device.String(), err)
+	}
+	serial = strings.Trim(serial, "\x00")
 	updateInterface(serial)
 	_, loaded := allocatedDevices.LoadOrStore(serial, true)
 	if loaded {
 		slog.Info("device already handled", "serial", serial)
 		return nil
 	}
-	// Note: We delete from allocatedDevices only when the device disconnects (ncmIOCopy returns)
-	// This prevents infinite retry loops on failure
+	defer allocatedDevices.Delete(serial)
 	slog.Info("got device", slog.String("serial", serial))
 
 	activeConfig, err := device.ActiveConfigNum()
@@ -238,76 +143,37 @@ func handleDevice(device *gousb.Device, serial string) error {
 			return fmt.Errorf("handleDevice: failed sending control2 for device %s with err %w", serial, err)
 		}
 		
-		// Control commands cause device to reset and re-enumerate with new USB address
-		// We MUST close this device handle and return - the next poll cycle will 
-		// pick up the re-enumerated device with config 5 available
-		slog.Info("NCM config enabled, device will re-enumerate", "serial", serial)
-		allocatedDevices.Delete(serial) // Allow re-detection
-		return nil // Return success - device will be re-detected with 5 configs
+		// Control commands cause device to re-enumerate with new USB address.
+		// This device handle is now invalid. Return error to trigger retry.
+		// Next poll (500ms) will find the re-enumerated device with 5 configs.
+		slog.Info("NCM enabled, waiting for device re-enumeration", "serial", serial)
+		return fmt.Errorf("device re-enumerating after NCM enable")
 	}
 
-	// Try to get the NCM config (config 5 on iOS devices)
-	cfg, err := tryNCMConfig(device, serial)
+	cfg, err := device.Config(5)
 	if err != nil {
-		return err
+		return fmt.Errorf("handleDevice: failed activating config for device %s with err %w", serial, err)
 	}
 	defer closeWithLog("config "+serial, cfg.Close)
 	slog.Info("got config", slog.String("config", cfg.String()), "serial", serial)
 
-	// Find all NCM interfaces and try to claim them in order
-	// Some interfaces may be claimed by kernel drivers, so we try each one
-	type ncmInterface struct {
-		number    int
-		alternate int
-		desc      string
-	}
-	var ncmInterfaces []ncmInterface
-	
-	for _, ifaceDesc := range cfg.Desc.Interfaces {
-		for _, alt := range ifaceDesc.AltSettings {
+	var ifNumber = -1
+	var altS = -1
+	for _, iface := range cfg.Desc.Interfaces {
+		for _, alt := range iface.AltSettings {
 			if alt.Class == 10 && alt.SubClass == 0 && len(alt.Endpoints) == 2 {
-				slog.Info("found NCM interface", 
-					slog.Int("interface", ifaceDesc.Number),
-					slog.Int("alt", alt.Alternate),
-					slog.String("desc", alt.String()),
-					slog.String("serial", serial))
-				ncmInterfaces = append(ncmInterfaces, ncmInterface{
-					number:    ifaceDesc.Number,
-					alternate: alt.Alternate,
-					desc:      alt.String(),
-				})
+				slog.Info("alt setting", slog.String("alt", alt.String()), slog.Int("class", int(alt.Class)), slog.Int("subclass", int(alt.SubClass)), slog.String("protocol", alt.Protocol.String()), slog.String("serial", serial))
+				ifNumber = iface.Number
+				altS = alt.Alternate
 			}
 		}
 	}
-	
-	if len(ncmInterfaces) == 0 {
-		return fmt.Errorf("handleDevice: no NCM interfaces found in config")
+	if ifNumber == -1 || altS == -1 {
+		return fmt.Errorf("handleDevice: could not find interface or altsetting")
 	}
-	
-	// Try to claim each NCM interface in order until one succeeds
-	var iface *gousb.Interface
-	var claimErr error
-	for _, ncmIf := range ncmInterfaces {
-		slog.Debug("attempting to claim interface", 
-			slog.Int("interface", ncmIf.number), 
-			slog.Int("alt", ncmIf.alternate),
-			slog.String("serial", serial))
-		
-		iface, claimErr = cfg.Interface(ncmIf.number, ncmIf.alternate)
-		if claimErr == nil {
-			slog.Info("successfully claimed interface", 
-				slog.Int("interface", ncmIf.number),
-				slog.String("serial", serial))
-			break
-		}
-		slog.Warn("failed to claim interface, trying next", 
-			slog.Int("interface", ncmIf.number),
-			slog.Any("err", claimErr),
-			slog.String("serial", serial))
-	}
-	
-	if iface == nil {
-		return fmt.Errorf("handleDevice: failed to claim any NCM interface for device %s. last error: %w", serial, claimErr)
+	iface, err := cfg.Interface(ifNumber, altS)
+	if err != nil {
+		return fmt.Errorf("handleDevice: failed to claim interface for device %s. this can happen if some other process already claimed it. err %w", serial, err)
 	}
 	defer func() {
 		slog.Info("closing interface", "serial", serial)
@@ -361,11 +227,6 @@ func handleDevice(device *gousb.Device, serial string) error {
 	//blocks until the device disconnects or the adapter fails for some reason
 	err = ncmIOCopy(out, inStream, ifce, serial)
 	slog.Info("stopping interface for device", "serial", serial)
-	
-	// Device disconnected or failed - remove from tracking so it can be re-handled
-	allocatedDevices.Delete(serial)
-	failedDevices.Delete(serial) // Clear any failed state
-	
 	if err != nil {
 		slog.Error("failed to copy data", "err", err, "serial", serial)
 	}
