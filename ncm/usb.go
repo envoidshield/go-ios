@@ -191,6 +191,12 @@ func hasNCMInterface(cfg *gousb.Config) bool {
 func handleDevice(device *gousb.Device, serial string) error {
 	defer closeWithLog("device "+device.String(), device.Close)
 	
+	// Enable auto-detach of kernel drivers (e.g., AppleUSBNCM on macOS)
+	// This allows us to claim interfaces that the kernel might have claimed
+	if err := device.SetAutoDetach(true); err != nil {
+		slog.Debug("SetAutoDetach failed (may not be supported)", "err", err, "serial", serial)
+	}
+	
 	updateInterface(serial)
 	_, loaded := allocatedDevices.LoadOrStore(serial, true)
 	if loaded {
@@ -239,23 +245,60 @@ func handleDevice(device *gousb.Device, serial string) error {
 	defer closeWithLog("config "+serial, cfg.Close)
 	slog.Info("got config", slog.String("config", cfg.String()), "serial", serial)
 
-	var ifNumber = -1
-	var altS = -1
-	for _, iface := range cfg.Desc.Interfaces {
-		for _, alt := range iface.AltSettings {
+	// Find all NCM interfaces and try to claim them in order
+	// Some interfaces may be claimed by kernel drivers, so we try each one
+	type ncmInterface struct {
+		number    int
+		alternate int
+		desc      string
+	}
+	var ncmInterfaces []ncmInterface
+	
+	for _, ifaceDesc := range cfg.Desc.Interfaces {
+		for _, alt := range ifaceDesc.AltSettings {
 			if alt.Class == 10 && alt.SubClass == 0 && len(alt.Endpoints) == 2 {
-				slog.Info("alt setting", slog.String("alt", alt.String()), slog.Int("class", int(alt.Class)), slog.Int("subclass", int(alt.SubClass)), slog.String("protocol", alt.Protocol.String()), slog.String("serial", serial))
-				ifNumber = iface.Number
-				altS = alt.Alternate
+				slog.Info("found NCM interface", 
+					slog.Int("interface", ifaceDesc.Number),
+					slog.Int("alt", alt.Alternate),
+					slog.String("desc", alt.String()),
+					slog.String("serial", serial))
+				ncmInterfaces = append(ncmInterfaces, ncmInterface{
+					number:    ifaceDesc.Number,
+					alternate: alt.Alternate,
+					desc:      alt.String(),
+				})
 			}
 		}
 	}
-	if ifNumber == -1 || altS == -1 {
-		return fmt.Errorf("handleDevice: could not find interface or altsetting")
+	
+	if len(ncmInterfaces) == 0 {
+		return fmt.Errorf("handleDevice: no NCM interfaces found in config")
 	}
-	iface, err := cfg.Interface(ifNumber, altS)
-	if err != nil {
-		return fmt.Errorf("handleDevice: failed to claim interface for device %s. this can happen if some other process already claimed it. err %w", serial, err)
+	
+	// Try to claim each NCM interface in order until one succeeds
+	var iface *gousb.Interface
+	var claimErr error
+	for _, ncmIf := range ncmInterfaces {
+		slog.Debug("attempting to claim interface", 
+			slog.Int("interface", ncmIf.number), 
+			slog.Int("alt", ncmIf.alternate),
+			slog.String("serial", serial))
+		
+		iface, claimErr = cfg.Interface(ncmIf.number, ncmIf.alternate)
+		if claimErr == nil {
+			slog.Info("successfully claimed interface", 
+				slog.Int("interface", ncmIf.number),
+				slog.String("serial", serial))
+			break
+		}
+		slog.Warn("failed to claim interface, trying next", 
+			slog.Int("interface", ncmIf.number),
+			slog.Any("err", claimErr),
+			slog.String("serial", serial))
+	}
+	
+	if iface == nil {
+		return fmt.Errorf("handleDevice: failed to claim any NCM interface for device %s. last error: %w", serial, claimErr)
 	}
 	defer func() {
 		slog.Info("closing interface", "serial", serial)
