@@ -33,7 +33,7 @@ func Start(c chan os.Signal) error {
 	defer ctx.Close()
 	for {
 		select {
-		case <-time.After(5 * time.Second):
+		case <-time.After(500 * time.Millisecond):
 			checkDevices(ctx)
 			printStatus()
 		case <-c:
