@@ -1,0 +1,141 @@
+name: Build Binaries
+
+on:
+  push:
+    branches: [ main, develop, feature/* ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # Linux
+          - goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+          - goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+          
+          # macOS
+          - goos: darwin
+            goarch: amd64
+            suffix: darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            suffix: darwin-arm64
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+    
+    - name: Install dependencies
+      run: |
+        go mod download
+        go get github.com/json-iterator/go
+    
+    - name: Build binaries
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+      run: |
+        echo "Building binaries for ${{ matrix.goos }}/${{ matrix.goarch }}..."
+        
+        # Build main go-ios binary (includes pymobile tunnel support)
+        echo "Building go-ios..."
+        go build -ldflags="-s -w" -o go-ios-${{ matrix.suffix }} .
+        
+        # Build ostrace standalone
+        echo "Building ostrace (standard)..."
+        go build -ldflags="-s -w" -o ostrace-${{ matrix.suffix }} ./cmd/ostrace
+        
+        # Build high-performance ostrace (with pymobile tunnel support)
+        echo "Building ostrace-perf (high-performance with pymobile tunnel)..."
+        go build -tags perf -ldflags="-s -w" -o ostrace-perf-${{ matrix.suffix }} ./cmd/ostrace-perf
+        
+        # Build IoT multi-stream ostrace
+        echo "Building ostrace-multi (IoT-optimized for multiple streams)..."
+        go build -tags perf -ldflags="-s -w" -o ostrace-multi-${{ matrix.suffix }} ./cmd/ostrace-multi
+        
+        echo "Build complete! Generated binaries:"
+        ls -la *-${{ matrix.suffix }}
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: binaries-${{ matrix.suffix }}
+        path: |
+          go-ios-${{ matrix.suffix }}
+          ostrace-${{ matrix.suffix }}
+          ostrace-perf-${{ matrix.suffix }}
+          ostrace-multi-${{ matrix.suffix }}
+
+  # go-ncm requires CGO (libusb), so we build on native runners
+  build-ncm:
+    name: Build go-ncm
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            suffix: darwin-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            suffix: darwin-arm64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+    
+    - name: Install libusb (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libusb-1.0-0-dev
+    
+    - name: Install libusb (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install libusb
+    
+    - name: Build go-ncm
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+        CGO_ENABLED: 1
+      run: |
+        echo "Building go-ncm for ${{ matrix.goos }}/${{ matrix.goarch }}..."
+        cd ncm
+        go build -ldflags="-s -w" -o ../go-ncm-${{ matrix.suffix }} ../cmd/cdc-ncm/main.go
+        cd ..
+        echo "Build complete!"
+        ls -la go-ncm-${{ matrix.suffix }}
+    
+    - name: Upload go-ncm artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: go-ncm-${{ matrix.suffix }}
+        path: go-ncm-${{ matrix.suffix }}
