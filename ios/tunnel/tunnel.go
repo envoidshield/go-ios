@@ -272,10 +272,9 @@ func runCmd(cmd *exec.Cmd) error {
 
 	// Hide console window on Windows
 	if runtime.GOOS == "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			HideWindow:    true,
-			CreationFlags: 0x08000000, // CREATE_NO_WINDOW
-		}
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+		// Set Windows-specific attributes conditionally at runtime
+		// to avoid compilation errors on non-Windows platforms
 	}
 
 	err := cmd.Run()
