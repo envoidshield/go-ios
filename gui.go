@@ -873,7 +873,7 @@ func (g *GUIApp) extractUdidFromDeviceString(deviceStr string) string {
 // postToBalena posts device information to the Balena endpoint
 func (g *GUIApp) postToBalena(device *tunnel.Tunnel, hostKey string, privateKey string, publicKey string) (bool, string) {
 	// Balena endpoint configuration
-	balenaURL := "http://192.168.42.1:8000/devices/trust"
+	balenaURL := "http://192.168.42.1:8000/api/devices/trust"
 	
 	// Prepare device data with all required fields
 	deviceData := map[string]interface{}{
@@ -1204,7 +1204,7 @@ func (g *GUIApp) pairDevice() {
 			var deviceInfo map[string]interface{}
 			_, err = plist.Unmarshal(content, &deviceInfo)
 			if err == nil {
-				// Extract private key
+				// Extract 
 				if privKeyData, ok := deviceInfo["privateKey"].([]byte); ok {
 					privateKey = base64.StdEncoding.EncodeToString(privKeyData)
 				} else if privKeyStr, ok := deviceInfo["privateKey"].(string); ok {

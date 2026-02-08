@@ -15,7 +15,6 @@ import (
 	"math/big"
 	"os/exec"
 	"runtime"
-	"syscall"
 	"time"
 
 	"github.com/danielpaulus/go-ios/ios"
@@ -271,12 +270,7 @@ func runCmd(cmd *exec.Cmd) error {
 	cmd.Stderr = buf
 
 	// Hide console window on Windows
-	if runtime.GOOS == "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			HideWindow:    true,
-			CreationFlags: 0x08000000, // CREATE_NO_WINDOW
-		}
-	}
+	setSysProcAttr(cmd)
 
 	err := cmd.Run()
 	if err != nil {
