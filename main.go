@@ -490,10 +490,17 @@ The commands work as following:
 	userspaceTunnelPort, userspaceTunnelErr := arguments.Int("--userspace-port")
 
 	device, err := ios.GetDevice(udid)
+	usbmuxdAvailable := err == nil
 	// device address and rsd port are only available after the tunnel started
 	if !tunnelCommand {
-		exitIfError("Device not found: "+udid, err)
 		if addressErr == nil && rsdErr == nil {
+			// --address and --rsd-port provided explicitly
+			if !usbmuxdAvailable {
+				log.Info("Device not found via usbmuxd, using provided tunnel address and rsd-port")
+				device = ios.DeviceEntry{
+					Properties: ios.DeviceProperties{SerialNumber: udid},
+				}
+			}
 			if userspaceTunnelErr == nil {
 				device.UserspaceTUN = true
 				device.UserspaceTUNHost = userspaceTunnelHost
@@ -501,12 +508,22 @@ The commands work as following:
 			}
 			device = deviceWithRsdProvider(device, udid, address, rsdPort)
 		} else {
-			info, err := tunnel.TunnelInfoForDevice(device.Properties.SerialNumber, tunnelInfoHost, tunnelInfoPort)
-			if err == nil {
+			// No --address/--rsd-port: try tunnel info from agent
+			if !usbmuxdAvailable {
+				device = ios.DeviceEntry{
+					Properties: ios.DeviceProperties{SerialNumber: udid},
+				}
+			}
+			info, tunnelErr := tunnel.TunnelInfoForDevice(device.Properties.SerialNumber, tunnelInfoHost, tunnelInfoPort)
+			if tunnelErr == nil {
+				log.WithField("udid", device.Properties.SerialNumber).Infof("Got tunnel info: address=%s rsdPort=%d", info.Address, info.RsdPort)
 				device.UserspaceTUNPort = info.UserspaceTUNPort
 				device.UserspaceTUNHost = userspaceTunnelHost
 				device.UserspaceTUN = info.UserspaceTUN
 				device = deviceWithRsdProvider(device, udid, info.Address, info.RsdPort)
+			} else if !usbmuxdAvailable {
+				log.WithField("udid", udid).WithError(tunnelErr).Error("failed to get tunnel info")
+				exitIfError("Device not found via usbmuxd and no tunnel info available", err)
 			} else {
 				log.WithField("udid", device.Properties.SerialNumber).Warn("failed to get tunnel info")
 			}
@@ -2795,11 +2812,18 @@ func deviceWithRsdProvider(device ios.DeviceEntry, udid string, address string, 
 	exitIfError(fmt.Sprintf("could not connect to RSD, host %s, port %d", address, rsdPort), err)
 	defer rsdService.Close()
 	rsdProvider, err := rsdService.Handshake()
+	exitIfError("error during RSD handshake", err)
 	device1, err := ios.GetDeviceWithAddress(udid, address, rsdProvider)
+	if err != nil {
+		// Device not in usbmuxd (tunnel-only device), set up entry directly
+		log.WithField("udid", udid).Debug("Device not found via usbmuxd, creating tunnel-only device entry")
+		device1 = device
+		device1.Address = address
+		device1.Rsd = rsdProvider
+	}
 	device1.UserspaceTUN = device.UserspaceTUN
 	device1.UserspaceTUNHost = device.UserspaceTUNHost
 	device1.UserspaceTUNPort = device.UserspaceTUNPort
-	exitIfError("error getting devicelist", err)
 
 	return device1
 }

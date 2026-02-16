@@ -168,48 +168,112 @@ func ServeTunnelInfo(tm *TunnelManager, port int) error {
 	return nil
 }
 
-func TunnelInfoForDevice(udid string, tunnelInfoHost string, tunnelInfoPort int) (Tunnel, error) {
-	c := http.Client{
-		Timeout: 5 * time.Second,
-	}
-	res, err := c.Get(fmt.Sprintf("http://%s:%d/tunnel/%s", tunnelInfoHost, tunnelInfoPort, udid))
-	if err != nil {
-		return Tunnel{}, fmt.Errorf("TunnelInfoForDevice: failed to get tunnel info: %w", err)
-	}
-	defer res.Body.Close()
-
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return Tunnel{}, fmt.Errorf("TunnelInfoForDevice: failed to read body: %w", err)
-	}
-	var info Tunnel
-	err = json.Unmarshal(body, &info)
-	if err != nil {
-		return Tunnel{}, fmt.Errorf("TunnelInfoForDevice: failed to parse response: %w", err)
-	}
-	return info, nil
+// externalTunnelEntry represents a tunnel entry from an external (non-go-ios) tunnel service.
+// The external service exposes GET / which returns: {"UDID": [{"tunnel-address":"...", "tunnel-port":58961, ...}]}
+type externalTunnelEntry struct {
+	TaskIdentifier   string                 `json:"task_identifier"`
+	DeviceIdentifier string                 `json:"device_identifier"`
+	TunnelAddress    string                 `json:"tunnel-address"`
+	TunnelPort       int                    `json:"tunnel-port"`
+	Interface        string                 `json:"interface"`
+	Protocol         string                 `json:"protocol"`
+	DirectIPAddr     string                 `json:"direct_ip_addr"`
+	DeviceInfo       map[string]interface{} `json:"device_information"`
+	ConnectionProto  string                 `json:"connection_protocol"`
 }
 
-func ListRunningTunnels(tunnelInfoHost string, tunnelInfoPort int) ([]Tunnel, error) {
-	c := http.Client{
-		Timeout: 5 * time.Second,
-	}
-	res, err := c.Get(fmt.Sprintf("http://%s:%d/tunnels", tunnelInfoHost, tunnelInfoPort))
+// parseExternalTunnelResponse parses the external tunnel service format:
+//
+//	{"UDID": [{"device_identifier":"...", "tunnel-address":"fd00::1", "tunnel-port":58961, ...}], ...}
+func parseExternalTunnelResponse(body []byte) ([]Tunnel, error) {
+	var extMap map[string][]externalTunnelEntry
+	err := json.Unmarshal(body, &extMap)
 	if err != nil {
-		return nil, fmt.Errorf("TunnelInfoForDevice: failed to get tunnel info: %w", err)
+		return nil, err
+	}
+	var tunnels []Tunnel
+	for udid, entries := range extMap {
+		for _, entry := range entries {
+			tunnels = append(tunnels, Tunnel{
+				Udid:    udid,
+				Address: entry.TunnelAddress,
+				RsdPort: entry.TunnelPort,
+			})
+		}
+	}
+	return tunnels, nil
+}
+
+// fetchAndReadBody performs a GET request and returns the body bytes.
+// Returns an error if the request fails or returns a non-200 status.
+func fetchAndReadBody(c http.Client, url string) ([]byte, error) {
+	res, err := c.Get(url)
+	if err != nil {
+		return nil, err
 	}
 	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d from %s", res.StatusCode, url)
+	}
+	return io.ReadAll(res.Body)
+}
 
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, fmt.Errorf("TunnelInfoForDevice: failed to read body: %w", err)
+// TunnelInfoForDevice retrieves tunnel info for a specific device.
+// It tries two strategies:
+//  1. go-ios native agent: GET /tunnel/{udid} (returns a Tunnel JSON object)
+//  2. External tunnel service: GET / (returns {"UDID": [{...}]} format)
+func TunnelInfoForDevice(udid string, tunnelInfoHost string, tunnelInfoPort int) (Tunnel, error) {
+	c := http.Client{Timeout: 5 * time.Second}
+	base := fmt.Sprintf("http://%s:%d", tunnelInfoHost, tunnelInfoPort)
+
+	// Strategy 1: go-ios native agent endpoint GET /tunnel/{udid}
+	if body, err := fetchAndReadBody(c, fmt.Sprintf("%s/tunnel/%s", base, udid)); err == nil {
+		var info Tunnel
+		if json.Unmarshal(body, &info) == nil && info.Address != "" {
+			return info, nil
+		}
 	}
-	var info []Tunnel
-	err = json.Unmarshal(body, &info)
-	if err != nil {
-		return nil, fmt.Errorf("TunnelInfoForDevice: failed to parse response: %w", err)
+
+	// Strategy 2: external tunnel service GET /
+	if body, err := fetchAndReadBody(c, base+"/"); err == nil {
+		tunnels, parseErr := parseExternalTunnelResponse(body)
+		if parseErr == nil {
+			for _, t := range tunnels {
+				if t.Udid == udid {
+					return t, nil
+				}
+			}
+		}
 	}
-	return info, nil
+
+	return Tunnel{}, fmt.Errorf("TunnelInfoForDevice: no tunnel found for device %s at %s", udid, base)
+}
+
+// ListRunningTunnels retrieves all running tunnels.
+// It tries two strategies:
+//  1. go-ios native agent: GET /tunnels (returns []Tunnel)
+//  2. External tunnel service: GET / (returns {"UDID": [{...}]} format)
+func ListRunningTunnels(tunnelInfoHost string, tunnelInfoPort int) ([]Tunnel, error) {
+	c := http.Client{Timeout: 5 * time.Second}
+	base := fmt.Sprintf("http://%s:%d", tunnelInfoHost, tunnelInfoPort)
+
+	// Strategy 1: go-ios native agent endpoint GET /tunnels
+	if body, err := fetchAndReadBody(c, base+"/tunnels"); err == nil {
+		var tunnels []Tunnel
+		if json.Unmarshal(body, &tunnels) == nil && len(tunnels) > 0 {
+			return tunnels, nil
+		}
+	}
+
+	// Strategy 2: external tunnel service GET /
+	if body, err := fetchAndReadBody(c, base+"/"); err == nil {
+		tunnels, parseErr := parseExternalTunnelResponse(body)
+		if parseErr == nil {
+			return tunnels, nil
+		}
+	}
+
+	return nil, fmt.Errorf("ListRunningTunnels: could not list tunnels from %s", base)
 }
 
 // TunnelManager starts tunnels for devices when needed (if no tunnel is running yet) and stores the information

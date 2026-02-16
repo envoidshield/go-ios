@@ -149,10 +149,17 @@ func (r RsdHandshakeResponse) GetService(p int) string {
 }
 
 // GetPort returns the port for the given service.
+// If the exact service name is not found, it also checks for a ".shim.remote" variant.
 func (r RsdHandshakeResponse) GetPort(service string) int {
 	if s, ok := r.Services[service]; ok {
 		return int(s.Port)
 	}
+	shim := fmt.Sprintf("%s.shim.remote", service)
+	if s, ok := r.Services[shim]; ok {
+		log.Debugf("returning port of '%s'-shim", service)
+		return int(s.Port)
+	}
+	log.Debugf("GetPort: service '%s' not found in RSD services (available: %d services)", service, len(r.Services))
 	return 0
 }
 

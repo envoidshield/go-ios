@@ -7,12 +7,14 @@ import (
 )
 
 const serviceName = "com.apple.mobile.diagnostics_relay"
+const shimServiceName = "com.apple.mobile.diagnostics_relay.shim.remote"
 
 type Connection struct {
 	deviceConn ios.DeviceConnectionInterface
 	plistCodec ios.PlistCodec
 }
 
+// New connects to the diagnostics relay service via usbmuxd (USB).
 func New(device ios.DeviceEntry) (*Connection, error) {
 	deviceConn, err := ios.ConnectToService(device, serviceName)
 	if err != nil {
@@ -21,8 +23,26 @@ func New(device ios.DeviceEntry) (*Connection, error) {
 	return &Connection{deviceConn: deviceConn, plistCodec: ios.NewPlistCodec()}, nil
 }
 
+// NewWithShimConnection connects to the diagnostics relay shim service over a tunnel interface.
+// The service port is obtained from remote service discovery (iOS 17+).
+func NewWithShimConnection(device ios.DeviceEntry) (*Connection, error) {
+	deviceConn, err := ios.ConnectToShimService(device, shimServiceName)
+	if err != nil {
+		return &Connection{}, err
+	}
+	return &Connection{deviceConn: deviceConn, plistCodec: ios.NewPlistCodec()}, nil
+}
+
+// Reboot reboots the device. It uses the shim tunnel connection for iOS 17+ devices
+// with RSD, and falls back to the usbmuxd connection otherwise.
 func Reboot(device ios.DeviceEntry) error {
-	service, err := New(device)
+	var service *Connection
+	var err error
+	if device.SupportsRsd() {
+		service, err = NewWithShimConnection(device)
+	} else {
+		service, err = New(device)
+	}
 	if err != nil {
 		return err
 	}
