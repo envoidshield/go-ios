@@ -54,6 +54,19 @@ func (lockDownConn *LockDownConnection) StartService(serviceName string) (StartS
 // StartService conveniently starts a service on a device and cleans up the used UsbMuxconnection.
 // It returns the service port as a uint16 in BigEndian byte order.
 func StartService(device DeviceEntry, serviceName string) (StartServiceResponse, error) {
+	// If device supports RSD/tunnel, we don't need to start service via lockdown
+	// as the service is already available via the tunnel
+	if device.SupportsRsd() {
+		// For RSD/tunnel connections, we return a dummy response
+		// The actual connection will be handled by ConnectToShimService
+		return StartServiceResponse{
+			Port:             0, // Not used for RSD connections
+			Service:          serviceName,
+			EnableServiceSSL: false, // RSD handles SSL differently
+		}, nil
+	}
+
+	// Fall back to usbmuxd for legacy connections
 	lockdown, err := ConnectLockdownWithSession(device)
 	if err != nil {
 		return StartServiceResponse{}, err

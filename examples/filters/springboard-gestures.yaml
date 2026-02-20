@@ -1,0 +1,12 @@
+# Filter for SpringBoard process excluding gesture logs
+filters:
+  - type: AND
+    children:
+      - field: image_name
+        operator: EQUALS
+        value: SpringBoard
+      - type: NOT
+        children:
+          - field: message
+            operator: CONTAINS
+            value: gesture

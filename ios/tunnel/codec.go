@@ -149,6 +149,8 @@ func (c *controlChannelReadWriter) writeRequest(req map[string]interface{}) erro
 }
 
 func (c *controlChannelReadWriter) write(message map[string]interface{}) error {
+	fmt.Printf("write - Sending message: %+v\n", message) // Debug log before building envelope
+
 	e := map[string]interface{}{
 		"mangledTypeName": "RemotePairing.ControlChannelMessageEnvelope",
 		"value": map[string]interface{}{
@@ -157,11 +159,17 @@ func (c *controlChannelReadWriter) write(message map[string]interface{}) error {
 			"sequenceNumber": c.seqNr,
 		},
 	}
+
+	fmt.Printf("write - Envelope built: %+v\n", e) // Debug log of the complete envelope
+
 	c.seqNr += 1
 	err := c.conn.Send(e)
 	if err != nil {
 		return fmt.Errorf("write: failed to send message: %w", err)
 	}
+
+	fmt.Printf("write - Message sent successfully\n") // Debug log after successful send
+
 	return nil
 }
 
@@ -170,12 +178,24 @@ func (c *controlChannelReadWriter) read() (map[string]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	fmt.Printf("read - Received message: %+v\n", p) // Debug log of the raw received message
+
 	value, err := getChildMap(p, "value")
 	if err != nil {
 		return nil, err
 	}
 
-	return getChildMap(value, "message")
+	fmt.Printf("read - 'value' map: %+v\n", value) // Debug log of the 'value' map
+
+	message, err := getChildMap(value, "message")
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Printf("read - 'message' map: %+v\n", message) // Debug log of the 'message' map
+
+	return message, nil
 }
 
 // cipherStream encrypts and decrypts payloads embedded into 'RemotePairing.ControlChannelMessageEnvelope' messages

@@ -1,0 +1,39 @@
+# Example configuration for multi-stream ostrace on IoT devices
+# Optimized for dual-core processors with limited memory
+
+pymobile_tunnel: 49151
+max_workers: 2      # Match core count
+buffer_size: 50     # Small buffer to minimize memory usage
+
+streams:
+  # Device 1 - Split into 3 streams
+  - name: "device1_critical"
+    udid: "00008112-000869810A83A01E"
+    filter_file: "filters/critical-only.yaml"  # Errors and faults only
+    output_file: "/tmp/logs/device1_critical.jsonl"
+    
+  - name: "device1_springboard"
+    udid: "00008112-000869810A83A01E"  
+    filter_file: "filters/springboard.yaml"   # UI events
+    output_file: "/tmp/logs/device1_springboard.jsonl"
+    
+  - name: "device1_network"
+    udid: "00008112-000869810A83A01E"
+    filter_file: "filters/network.yaml"       # Network activity
+    output_file: "/tmp/logs/device1_network.jsonl"
+
+  # Device 2 - Split into 3 streams  
+  - name: "device2_critical"
+    udid: "00008130-000418901E93803A"
+    filter_file: "filters/critical-only.yaml"
+    output_file: "/tmp/logs/device2_critical.jsonl"
+    
+  - name: "device2_springboard"
+    udid: "00008130-000418901E93803A"
+    filter_file: "filters/springboard.yaml"
+    output_file: "/tmp/logs/device2_springboard.jsonl"
+    
+  - name: "device2_network"
+    udid: "00008130-000418901E93803A"
+    filter_file: "filters/network.yaml"
+    output_file: "/tmp/logs/device2_network.jsonl"

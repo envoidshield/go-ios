@@ -128,6 +128,21 @@ func GetDeviceWithAddress(udid string, address string, provider RsdPortProvider)
 		}
 	}
 	log.Debugf("Looking for device '%s'", udid)
+
+	// If we have an RSD provider, create device entry directly without usbmuxd
+	if provider != nil && address != "" {
+		log.Debugf("Creating device entry for RSD connection: %s at %s", udid, address)
+		device := DeviceEntry{
+			Properties: DeviceProperties{
+				SerialNumber: udid,
+			},
+			Address: address,
+			Rsd:     provider,
+		}
+		return device, nil
+	}
+
+	// Fall back to usbmuxd enumeration for regular connections
 	deviceList, err := ListDevices()
 	if err != nil {
 		return DeviceEntry{}, err

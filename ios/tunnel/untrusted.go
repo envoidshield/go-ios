@@ -48,62 +48,62 @@ func (t *tunnelService) Close() error {
 	return t.c.Close()
 }
 
-func (t *tunnelService) ManualPairGetHostKey() (string, error) {
-  log.Debug("Init connection phase")
-  err := t.controlChannel.writeRequest(map[string]interface{}{
-    "handshake": map[string]interface{}{
-      "_0": map[string]interface{}{
-        "hostOptions": map[string]interface{}{
-          "attemptPairVerify": true,
-        },
-        "wireProtocolVersion": int64(19),
-      },
-    },
-  })
-  if err != nil {
-    return "", fmt.Errorf("ManualPair: failed to send 'attemptPairVerify' request: %w", err)
-  }
-  // ignore the response for now
-  _, err = t.controlChannel.read()
-  if err != nil {
-    return "", fmt.Errorf("ManualPair: failed to read 'attemptPairVerify' response: %w", err)
-  }
-  err = t.verifyPair()
-  if err == nil {
-    return "", nil
-  }
-  log.WithError(err).Info("pair verify failed")
-  err = t.setupManualPairing()
-  if err != nil {
-    return "", fmt.Errorf("ManualPair: failed to initiate manual pairing: %w", err)
-  }
-  sessionKey, err := t.setupSessionKey()
-  if err != nil {
-    return "", fmt.Errorf("ManualPair: failed to setup SRP session key: %w", err)
-  }
-  err = t.exchangeDeviceInfo(sessionKey)
-  if err != nil {
-    return "", fmt.Errorf("ManualPair: failed to exchange device info: %w", err)
-  }
-  err = t.setupCiphers(sessionKey)
-  if err != nil {
-    return "", fmt.Errorf("ManualPair: failed to setup session ciphers: %w", err)
-  }
-  key, err := t.createUnlockKey()
-  if err != nil {
-    return "", fmt.Errorf("ManualPair: failed to create unlock key: %w", err)
-  }
-  fmt.Printf("Unlock Key: %s\n", key)
-  return key, nil
+type RemotePairResult struct {
+	PublicKey           string `json:"public_key"`
+	PrivateKey          string `json:"private_key"`
+	RemoteUnlockHostKey string `json:"remote_unlock_host_key"`
 }
 
-// ManualPair triggers a device pairing that requires the user to press the 'Trust' button on the device that appears
-// when this operation is triggered
-// If there is already an active pairing with the credentials stored in PairRecordManager this call does not trigger
-// anything on the device and returns with an error
-func (t *tunnelService) ManualPair() error {
-  log.Debug("Init connection phase")
+func (t *tunnelService) ManualPairGetHostKey() (string, error) {
+	log.Debug("Init connection phase")
+	err := t.controlChannel.writeRequest(map[string]interface{}{
+		"handshake": map[string]interface{}{
+			"_0": map[string]interface{}{
+				"hostOptions": map[string]interface{}{
+					"attemptPairVerify": true,
+				},
+				"wireProtocolVersion": int64(19),
+			},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("ManualPair: failed to send 'attemptPairVerify' request: %w", err)
+	}
+	// ignore the response for now
+	_, err = t.controlChannel.read()
+	if err != nil {
+		return "", fmt.Errorf("ManualPair: failed to read 'attemptPairVerify' response: %w", err)
+	}
+	err = t.verifyPair()
+	if err == nil {
+		return "", nil
+	}
+	log.WithError(err).Info("pair verify failed")
+	err = t.setupManualPairing()
+	if err != nil {
+		return "", fmt.Errorf("ManualPair: failed to initiate manual pairing: %w", err)
+	}
+	sessionKey, err := t.setupSessionKey()
+	if err != nil {
+		return "", fmt.Errorf("ManualPair: failed to setup SRP session key: %w", err)
+	}
+	err = t.exchangeDeviceInfo(sessionKey)
+	if err != nil {
+		return "", fmt.Errorf("ManualPair: failed to exchange device info: %w", err)
+	}
+	err = t.setupCiphers(sessionKey)
+	if err != nil {
+		return "", fmt.Errorf("ManualPair: failed to setup session ciphers: %w", err)
+	}
+	key, err := t.createUnlockKey()
+	if err != nil {
+		return "", fmt.Errorf("ManualPair: failed to create unlock key: %w", err)
+	}
+	fmt.Printf("Unlock Key: %s\n", key)
+	return key, nil
+}
 
+func (t *tunnelService) ManualPair() error {
 	err := t.controlChannel.writeRequest(map[string]interface{}{
 		"handshake": map[string]interface{}{
 			"_0": map[string]interface{}{
@@ -150,13 +150,60 @@ func (t *tunnelService) ManualPair() error {
 		return fmt.Errorf("ManualPair: failed to setup session ciphers: %w", err)
 	}
 
-  key, err := t.createUnlockKey()
+	_, err = t.createUnlockKey()
 	if err != nil {
 		return fmt.Errorf("ManualPair: failed to create unlock key: %w", err)
 	}
-  fmt.Printf("Unlock Key: %s\n", key)
 
 	return nil
+}
+
+func (t *tunnelService) ManualPairGetHostKey() (string, error) {
+	err := t.controlChannel.writeRequest(map[string]interface{}{
+		"handshake": map[string]interface{}{
+			"_0": map[string]interface{}{
+				"hostOptions": map[string]interface{}{
+					"attemptPairVerify": true,
+				},
+				"wireProtocolVersion": int64(19),
+			},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("ManualPair: failed to send 'attemptPairVerify' request: %w", err)
+	}
+	// ignore the response for now
+	_, err = t.controlChannel.read()
+	if err != nil {
+		return "", fmt.Errorf("ManualPair: failed to read 'attemptPairVerify' response: %w", err)
+	}
+	err = t.verifyPair()
+	if err == nil {
+		return "", nil
+	}
+	log.WithError(err).Info("pair verify failed")
+	err = t.setupManualPairing()
+	if err != nil {
+		return "", fmt.Errorf("ManualPair: failed to initiate manual pairing: %w", err)
+	}
+	sessionKey, err := t.setupSessionKey()
+	if err != nil {
+		return "", fmt.Errorf("ManualPair: failed to setup SRP session key: %w", err)
+	}
+	err = t.exchangeDeviceInfo(sessionKey)
+	if err != nil {
+		return "", fmt.Errorf("ManualPair: failed to exchange device info: %w", err)
+	}
+	err = t.setupCiphers(sessionKey)
+	if err != nil {
+		return "", fmt.Errorf("ManualPair: failed to setup session ciphers: %w", err)
+	}
+
+	unlockKey, err := t.createUnlockKeyAsString()
+	if err != nil {
+		return "", fmt.Errorf("ManualPair: failed to create unlock key: %w", err)
+	}
+	return unlockKey, nil
 }
 
 func (t *tunnelService) createTunnelListener() (tunnelListener, error) {
@@ -171,11 +218,21 @@ func (t *tunnelService) createTunnelListener() (tunnelListener, error) {
 		return tunnelListener{}, err
 	}
 
+	// Create a base64 encoded string from the DER bytes
+	base64Key := base64.StdEncoding.EncodeToString(der)
+
+	// Use the base64 encoded string in the request
 	err = t.cipher.write(map[string]interface{}{
 		"request": map[string]interface{}{
 			"_0": map[string]interface{}{
 				"createListener": map[string]interface{}{
-					"key":                   der,
+					"key": base64Key,
+					"peerConnectionsInfo": []map[string]interface{}{
+						{
+							"owningPID":         1348,
+							"owningProcessName": "CoreDeviceService",
+						},
+					},
 					"transportProtocolType": "quic",
 				},
 			},
@@ -220,55 +277,75 @@ func (t *tunnelService) createTunnelListener() (tunnelListener, error) {
 }
 
 func (t *tunnelService) setupCiphers(sessionKey []byte) error {
+	fmt.Println("[DEBUG] setupCiphers: initializing cipher setup")
+
 	clientKey := make([]byte, 32)
 	_, err := hkdf.New(sha512.New, sessionKey, nil, []byte("ClientEncrypt-main")).Read(clientKey)
 	if err != nil {
+		fmt.Printf("[DEBUG] setupCiphers: failed to derive clientKey: %v\n", err)
 		return err
 	}
+	fmt.Printf("[DEBUG] setupCiphers: derived clientKey: %x\n", clientKey)
+
 	serverKey := make([]byte, 32)
 	_, err = hkdf.New(sha512.New, sessionKey, nil, []byte("ServerEncrypt-main")).Read(serverKey)
 	if err != nil {
+		fmt.Printf("[DEBUG] setupCiphers: failed to derive serverKey: %v\n", err)
 		return err
 	}
+	fmt.Printf("[DEBUG] setupCiphers: derived serverKey: %x\n", serverKey)
+
 	server, err := chacha20poly1305.New(serverKey)
 	if err != nil {
+		fmt.Printf("[DEBUG] setupCiphers: failed to create server cipher: %v\n", err)
 		return err
 	}
+	fmt.Println("[DEBUG] setupCiphers: server cipher created successfully")
+
 	client, err := chacha20poly1305.New(clientKey)
 	if err != nil {
+		fmt.Printf("[DEBUG] setupCiphers: failed to create client cipher: %v\n", err)
 		return err
 	}
+	fmt.Println("[DEBUG] setupCiphers: client cipher created successfully")
 
 	t.cipher = newCipherStream(t.controlChannel, client, server)
+	fmt.Println("[DEBUG] setupCiphers: cipher streams assigned to tunnelService")
 
 	return nil
 }
 
 func (t *tunnelService) setupManualPairing() error {
-  log.Debug("Manual Pairing Init")
+	fmt.Println("[DEBUG] setupManualPairing: starting manual pairing setup")
+
 	buf := newTlvBuffer()
 	buf.writeByte(typeMethod, 0x00)
-	buf.writeByte(typeState, pairStateStartRequest)
+	buf.writeByte(typeState, 0x01)
+	fmt.Printf("[DEBUG] setupManualPairing: TLV buffer prepared, bytes=%x\n", buf.bytes())
 
 	event := pairingData{
 		data:            buf.bytes(),
 		kind:            "setupManualPairing",
-    sendingHost:     "EnVoid",
+		sendingHost:     "EnVoid",
 		startNewSession: true,
 	}
-
-  log.Debugf("[>] Created pairing event: kind=%s, sendingHost=%s, startNewSession=%t, TLV data=%x",
-	event.kind, event.sendingHost, event.startNewSession, event.data)
+	fmt.Println("[DEBUG] setupManualPairing: pairingData event created")
 
 	err := t.controlChannel.writeEvent(&event)
 	if err != nil {
+		fmt.Printf("[DEBUG] setupManualPairing: failed to write event: %v\n", err)
 		return err
 	}
+	fmt.Println("[DEBUG] setupManualPairing: event written to control channel")
+
 	_, err = t.controlChannel.read()
 	if err != nil {
+		fmt.Printf("[DEBUG] setupManualPairing: failed to read response: %v\n", err)
 		return err
 	}
-	return err
+	fmt.Println("[DEBUG] setupManualPairing: response read successfully")
+
+	return nil
 }
 
 func (t *tunnelService) readDeviceKey() (publicKey []byte, salt []byte, err error) {
@@ -288,173 +365,205 @@ func (t *tunnelService) readDeviceKey() (publicKey []byte, salt []byte, err erro
 	return
 }
 
-func (t *tunnelService) createUnlockKey() (string, error) {
-	err := t.cipher.write(map[string]interface{}{
+func (t *tunnelService) createUnlockKey() ([]byte, error) {
+	fmt.Println("[DEBUG] createUnlockKey: starting unlock key creation")
+
+	req := map[string]interface{}{
 		"request": map[string]interface{}{
 			"_0": map[string]interface{}{
 				"createRemoteUnlockKey": map[string]interface{}{},
 			},
 		},
-	})
-	if err != nil {
-		return "", err
 	}
+	fmt.Printf("[DEBUG] createUnlockKey: sending request: %+v\n", req)
+
+	err := t.cipher.write(req)
+	if err != nil {
+		fmt.Printf("[DEBUG] createUnlockKey: failed to write request: %v\n", err)
+		return nil, err
+	}
+	fmt.Println("[DEBUG] createUnlockKey: request sent successfully")
 
 	var res map[string]interface{}
 	err = t.cipher.read(&res)
 	if err != nil {
+		fmt.Printf("[DEBUG] createUnlockKey: failed to read response: %v\n", err)
+		return nil, err
+	}
+	fmt.Printf("[DEBUG] createUnlockKey: received response: %+v\n", res)
+
+	// TODO: extract the actual unlock key from `res` if available.
+	return nil, nil
+}
+
+func (t *tunnelService) createUnlockKeyAsString() (string, error) {
+	fmt.Println("[DEBUG] createUnlockKey: starting unlock key creation")
+
+	req := map[string]interface{}{
+		"request": map[string]interface{}{
+			"_0": map[string]interface{}{
+				"createRemoteUnlockKey": map[string]interface{}{},
+			},
+		},
+	}
+	fmt.Printf("[DEBUG] createUnlockKey: sending request: %+v\n", req)
+
+	err := t.cipher.write(req)
+	if err != nil {
+		fmt.Printf("[DEBUG] createUnlockKey: failed to write request: %v\n", err)
 		return "", err
 	}
+	fmt.Println("[DEBUG] createUnlockKey: request sent successfully")
 
-	// Extract the key from the response
+	var res map[string]interface{}
+	err = t.cipher.read(&res)
+	if err != nil {
+		fmt.Printf("[DEBUG] createUnlockKey: failed to read response: %v\n", err)
+		return "", err
+	}
+	fmt.Printf("[DEBUG] createUnlockKey: received response: %+v\n", res)
+
+	// Navigate the nested map to extract the hostKey string
 	response, ok := res["response"].(map[string]interface{})
 	if !ok {
-		return "", fmt.Errorf("invalid response format: missing 'response' object")
+		return "", fmt.Errorf("createUnlockKey: missing or invalid 'response' field")
 	}
-	
+
 	inner, ok := response["_1"].(map[string]interface{})
 	if !ok {
-		return "", fmt.Errorf("invalid response format: missing '_0' object")
+		return "", fmt.Errorf("createUnlockKey: missing or invalid '_1' field")
 	}
-	
-  createKeyResponse, ok := inner["createRemoteUnlockKey"].(map[string]interface{})
-  if !ok {
-      return "", fmt.Errorf("invalid response format: missing 'createRemoteUnlockKey' object")
-  }
 
-  // Fix the hostKey extraction - no need for type assertion in the variable declaration
-  hostKey, ok := createKeyResponse["hostKey"]
-  if !ok {
-      return "", fmt.Errorf("hostKey not found in response")
-  }
+	createRemoteUnlockKey, ok := inner["createRemoteUnlockKey"].(map[string]interface{})
+	if !ok {
+		return "", fmt.Errorf("createUnlockKey: missing or invalid 'createRemoteUnlockKey' field")
+	}
 
-  // Add the type assertion when converting the interface{} to string
-  unlockKey, ok := hostKey.(string)
-  if !ok {
-      return "", fmt.Errorf("hostKey is not a string")
-  }
+	hostKeyStr, ok := createRemoteUnlockKey["hostKey"].(string)
+	if !ok {
+		return "", fmt.Errorf("createUnlockKey: missing or invalid 'hostKey' field")
+	}
 
-  return unlockKey, nil
+	fmt.Printf("[DEBUG] createUnlockKey: extracted hostKey string: %s\n", hostKeyStr)
+	return hostKeyStr, nil
 }
 
 func (t *tunnelService) verifyPair() error {
+	log.Debug("verifyPair called")
 	key, _ := ecdh.X25519().GenerateKey(rand.Reader)
 	tlv := newTlvBuffer()
 	tlv.writeByte(typeState, pairStateStartRequest)
 	tlv.writeData(typePublicKey, key.PublicKey().Bytes())
-
 	event := pairingData{
 		data:            tlv.bytes(),
 		kind:            "verifyManualPairing",
 		startNewSession: true,
 	}
-
-	selfId := t.pairRecords.selfId
-
+	log.Debug("Sending Start Request event")
 	err := t.controlChannel.writeEvent(&event)
-
+	if err != nil {
+		log.Printf("Error writing start request event: %v", err)
+		return err
+	}
 	var devP pairingData
+	log.Debug("Waiting for Device Pair Response")
 	err = t.controlChannel.readEvent(&devP)
 	if err != nil {
+		log.Printf("Error reading device pair response: %v", err)
 		return err
 	}
-
 	devicePublicKeyBytes, err := tlvReader(devP.data).readCoalesced(typePublicKey)
+	log.Printf("Reading device public key from response, err: %v", err)
+
 	if err != nil {
+		log.Printf("Error reading device public key: %v", err)
 		return err
 	}
-
+	log.Printf("Device Public Key Bytes: %v", devicePublicKeyBytes)
 	if devicePublicKeyBytes == nil {
+		log.Printf("Did not get public key from device")
 		_ = t.controlChannel.writeEvent(pairVerifyFailed{})
 		return fmt.Errorf("verifyPair: did not get public key from device. Can not verify pairing")
 	}
 	devicePublicKey, err := ecdh.X25519().NewPublicKey(devicePublicKeyBytes)
+	log.Printf("Creating device public key, err: %v", err)
 	if err != nil {
+		log.Printf("Error creating device public key: %v", err)
 		return err
 	}
-
 	sharedSecret, err := key.ECDH(devicePublicKey)
+	log.Printf("Performing ECDH, err: %v", err)
 	if err != nil {
+		log.Printf("Error performing ECDH: %v", err)
 		return err
 	}
-
 	derived := make([]byte, 32)
 	_, err = hkdf.New(sha512.New, sharedSecret, []byte("Pair-Verify-Encrypt-Salt"), []byte("Pair-Verify-Encrypt-Info")).Read(derived)
+	log.Printf("Deriving key, err: %v", err)
 	if err != nil {
+		log.Printf("Error deriving key: %v", err)
 		return err
 	}
-
 	ci, err := chacha20poly1305.New(derived)
+	log.Printf("Creating cipher, err: %v", err)
 	if err != nil {
+		log.Printf("Error creating cipher: %v", err)
 		return err
 	}
-
 	signBuf := bytes.NewBuffer(nil)
-	// Write on bytes.Buffer never returns an error
 	_, _ = signBuf.Write(key.PublicKey().Bytes())
-	_, _ = signBuf.Write([]byte(selfId.Identifier))
+	_, _ = signBuf.Write([]byte(t.pairRecords.selfId.Identifier))
 	_, _ = signBuf.Write(devicePublicKeyBytes)
-
-	signature := ed25519.Sign(selfId.privateKey(), signBuf.Bytes())
-
+	signature := ed25519.Sign(t.pairRecords.selfId.privateKey(), signBuf.Bytes())
 	cTlv := newTlvBuffer()
 	cTlv.writeData(typeSignature, signature)
-	cTlv.writeData(typeIdentifier, []byte(selfId.Identifier))
-
+	cTlv.writeData(typeIdentifier, []byte(t.pairRecords.selfId.Identifier))
 	nonce := make([]byte, 12)
 	copy(nonce[4:], "PV-Msg03")
 	encrypted := ci.Seal(nil, nonce, cTlv.bytes(), nil)
+	log.Printf("Sealing data, err: %v", encrypted)
 
-	tlvOut := newTlvBuffer()
-	tlvOut.writeByte(typeState, pairStateVerifyRequest)
-	tlvOut.writeData(typeEncryptedData, encrypted)
+	if encrypted == nil {
+		log.Println("Encryption failed")
+		return fmt.Errorf("encryption failed")
+	}
 
-	pd := pairingData{
-		data:            tlvOut.bytes(),
-		kind:            "verifyManualPairing",
+	tlvEncrypted := newTlvBuffer()
+	tlvEncrypted.writeByte(typeState, pairStateVerifyRequest)
+	tlvEncrypted.writeData(typeEncryptedData, encrypted)
+	eventEncrypted := pairingData{
+		data:            tlvEncrypted.bytes(),
+		kind:            "verifyPairing",
 		startNewSession: false,
 	}
 
-	err = t.controlChannel.writeEvent(&pd)
+	log.Debug("Sending Verify Request event")
+	err = t.controlChannel.writeEvent(&eventEncrypted)
 	if err != nil {
+		log.Printf("Error writing verify request event: %v", err)
 		return err
 	}
 
-	var responseEvent pairingData
-	err = t.controlChannel.readEvent(&responseEvent)
+	var responseP pairingData
+	log.Debug("Waiting for Verify Response")
+	err = t.controlChannel.readEvent(&responseP)
 	if err != nil {
+		log.Printf("Error reading verify response: %v", err)
 		return err
 	}
 
-	errRes, err := tlvReader(responseEvent.data).readCoalesced(typeError)
+	errRes, err := tlvReader(responseP.data).readCoalesced(typeError)
+
+	log.Printf("Reading error from response, err: %v, errRes: %v", err, errRes)
 	if err != nil {
+		log.Printf("Error reading error from response: %v", err)
 		return err
 	}
-	if len(errRes) > 0 {
-    // Print the private and public keys in base64 format
-    privateKeyBytes := key.Bytes() // Get private key bytes
-    publicKeyBytes := key.PublicKey().Bytes() // Get public key bytes
-
-    // Encode to base64
-    privateKeyBase64 := base64.StdEncoding.EncodeToString(privateKeyBytes)
-    publicKeyBase64 := base64.StdEncoding.EncodeToString(publicKeyBytes)
-
-    // Print the keys
-    fmt.Printf("Private Key (Base64): %s\n", privateKeyBase64)
-    fmt.Printf("Public Key (Base64): %s\n", publicKeyBase64)
-		log.Debug("send pair verify failed event")
-		err := t.controlChannel.writeEvent(pairVerifyFailed{})
-		if err != nil {
-			return err
-		}
-		return tlvError(errRes[0])
+	if errRes != nil {
+		log.Printf("Received error from response: %v", errRes)
+		return fmt.Errorf("received error from response: %v", errRes)
 	}
-
-	err = t.setupCiphers(sharedSecret)
-	if err != nil {
-		return err
-	}
-
+	log.Debug("Verify Pair successful")
 	return nil
 }
 
@@ -475,23 +584,26 @@ type tunnelParameters struct {
 }
 
 func (t *tunnelService) setupSessionKey() ([]byte, error) {
+	fmt.Println("[DEBUG] setupSessionKey: starting session key setup")
+
 	devicePublicKey, deviceSalt, err := t.readDeviceKey()
 	if err != nil {
 		return nil, fmt.Errorf("setupSessionKey: failed to read device public key and salt value: %w", err)
 	}
+	fmt.Printf("[DEBUG] setupSessionKey: devicePublicKey=%x, deviceSalt=%x\n", devicePublicKey, deviceSalt)
 
-  log.Debugf("[<] PublicKey: %x | Salt: %x", devicePublicKey, deviceSalt)
-  log.Debug("SRP Auth phase")
 	srp, err := newSrpInfo(deviceSalt, devicePublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("setupSessionKey: failed to setup SRP: %w", err)
 	}
+	fmt.Printf("[DEBUG] setupSessionKey: SRP setup complete, ClientPublic=%x, ClientProof=%x\n", srp.ClientPublic, srp.ClientProof)
 
 	proofTlv := newTlvBuffer()
 	proofTlv.writeByte(typeState, pairStateVerifyRequest)
 	proofTlv.writeData(typePublicKey, srp.ClientPublic)
 	proofTlv.writeData(typeProof, srp.ClientProof)
-  log.Debugf("[>] TLV buffer and writing: state=%d, publicKey=%x, proof=%x", pairStateVerifyRequest, srp.ClientPublic, srp.ClientProof)
+	fmt.Printf("[DEBUG] setupSessionKey: proof TLV buffer prepared, bytes=%x\n", proofTlv.bytes())
+
 	err = t.controlChannel.writeEvent(&pairingData{
 		data: proofTlv.bytes(),
 		kind: "setupManualPairing",
@@ -499,52 +611,45 @@ func (t *tunnelService) setupSessionKey() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("setupSessionKey: failed to send SRP proof: %w", err)
 	}
+	fmt.Println("[DEBUG] setupSessionKey: SRP proof sent to device")
 
 	var proofPairingData pairingData
 	err = t.controlChannel.readEvent(&proofPairingData)
 	if err != nil {
 		return nil, fmt.Errorf("setupSessionKey: failed to read device SRP proof: %w", err)
 	}
+	fmt.Printf("[DEBUG] setupSessionKey: received device response, bytes=%x\n", proofPairingData.data)
+
 	serverProof, err := tlvReader(proofPairingData.data).readCoalesced(typeProof)
 	if err != nil {
 		return nil, fmt.Errorf("setupSessionKey: failed to parse device proof: %w", err)
 	}
-
-  log.Debugf("[<] Reading proof: %w, server proof: %w", proofPairingData, serverProof)
+	fmt.Printf("[DEBUG] setupSessionKey: extracted serverProof=%x\n", serverProof)
 
 	verified := srp.verifyServerProof(serverProof)
 	if !verified {
+		fmt.Println("[DEBUG] setupSessionKey: server proof verification failed")
 		return nil, fmt.Errorf("setupSessionKey: could not verify server proof")
 	}
-  log.Debugf("verified: %w", verified)
+	fmt.Println("[DEBUG] setupSessionKey: server proof verified successfully")
+
 	return srp.SessionKey, nil
 }
 
 func (t *tunnelService) exchangeDeviceInfo(sessionKey []byte) error {
-	log.Debug("🔁 Exchange Identity Phase started")
+	fmt.Println("[DEBUG] exchangeDeviceInfo: starting device info exchange")
 
-	// Derive signature key
-	log.Debug("🔐 Deriving Controller signature key with HKDF")
-	hkdfPairSetup := hkdf.New(sha512.New, sessionKey,
-		[]byte("Pair-Setup-Controller-Sign-Salt"),
-		[]byte("Pair-Setup-Controller-Sign-Info"))
-
+	hkdfPairSetup := hkdf.New(sha512.New, sessionKey, []byte("Pair-Setup-Controller-Sign-Salt"), []byte("Pair-Setup-Controller-Sign-Info"))
 	buf := bytes.NewBuffer(nil)
 	_, _ = io.CopyN(buf, hkdfPairSetup, 32)
-	log.Debugf("HKDF key material: %x", buf.Bytes())
-
-	// Add identifier and public key
-	log.Debugf("📛 Adding host identifier: %s", t.pairRecords.selfId.Identifier)
 	_, _ = buf.WriteString(t.pairRecords.selfId.Identifier)
-	log.Debugf("🔑 Adding host public key: %x", t.pairRecords.selfId.publicKey())
 	_, _ = buf.Write(t.pairRecords.selfId.publicKey())
 
-	// Sign input
-	signature := ed25519.Sign(t.pairRecords.selfId.privateKey(), buf.Bytes())
-	log.Debugf("✍️  Created signature: %x", signature)
+	fmt.Printf("[DEBUG] exchangeDeviceInfo: prepared signature buffer: %x\n", buf.Bytes())
 
-	// Build device info payload
-	log.Debug("🛠️ Building device info object")
+	signature := ed25519.Sign(t.pairRecords.selfId.privateKey(), buf.Bytes())
+	fmt.Printf("[DEBUG] exchangeDeviceInfo: signature: %x\n", signature)
+
 	deviceInfo, err := opack.Encode(map[string]interface{}{
 		"accountID":                   t.pairRecords.selfId.Identifier,
 		"altIRK":                      []byte{0xe9, 0xe8, 0x2d, 0xc0, 0x6a, 0x49, 0x79, 0x4b, 0x56, 0x4f, 0x00, 0x19, 0xb1, 0xc7, 0x7b},
@@ -555,83 +660,77 @@ func (t *tunnelService) exchangeDeviceInfo(sessionKey []byte) error {
 		"remotepairing_serial_number": "AAAAAAAAAAAA",
 	})
 	if err != nil {
-		log.WithError(err).Error("Failed to encode device info")
+		fmt.Printf("[DEBUG] exchangeDeviceInfo: failed to encode device info: %v\n", err)
 		return err
 	}
-	log.Debugf("📦 Encoded device info: %x", deviceInfo)
+	fmt.Printf("[DEBUG] exchangeDeviceInfo: encoded deviceInfo (%d bytes)\n", len(deviceInfo))
 
 	deviceInfoTlv := newTlvBuffer()
 	deviceInfoTlv.writeData(typeSignature, signature)
 	deviceInfoTlv.writeData(typePublicKey, t.pairRecords.selfId.publicKey())
 	deviceInfoTlv.writeData(typeIdentifier, []byte(t.pairRecords.selfId.Identifier))
 	deviceInfoTlv.writeData(typeInfo, deviceInfo)
-	log.Debug("📄 Constructed TLV8 with identifier, public key, signature, and info")
 
-	// Encrypt the device info TLV
-	log.Debug("🔐 Deriving encryption key with HKDF for ChaCha20Poly1305")
+	fmt.Printf("[DEBUG] exchangeDeviceInfo: constructed deviceInfo TLV (%d bytes)\n", len(deviceInfoTlv.bytes()))
+
 	sessionKeyBuf := bytes.NewBuffer(nil)
-	_, err = io.CopyN(sessionKeyBuf,
-		hkdf.New(sha512.New, sessionKey,
-			[]byte("Pair-Setup-Encrypt-Salt"),
-			[]byte("Pair-Setup-Encrypt-Info")), 32)
+	_, err = io.CopyN(sessionKeyBuf, hkdf.New(sha512.New, sessionKey, []byte("Pair-Setup-Encrypt-Salt"), []byte("Pair-Setup-Encrypt-Info")), 32)
 	if err != nil {
-		log.WithError(err).Error("Failed to derive encryption key")
+		fmt.Printf("[DEBUG] exchangeDeviceInfo: failed to derive encryption key: %v\n", err)
 		return err
 	}
 	setupKey := sessionKeyBuf.Bytes()
-	log.Debugf("Derived setup encryption key: %x", setupKey)
+	fmt.Printf("[DEBUG] exchangeDeviceInfo: derived encryption key: %x\n", setupKey)
 
 	cipher, err := chacha20poly1305.New(setupKey)
 	if err != nil {
-		log.WithError(err).Error("Failed to create ChaCha20Poly1305 cipher")
+		fmt.Printf("[DEBUG] exchangeDeviceInfo: failed to create cipher: %v\n", err)
 		return err
 	}
+	fmt.Println("[DEBUG] exchangeDeviceInfo: ChaCha20-Poly1305 cipher created")
 
 	nonce := make([]byte, cipher.NonceSize())
 	copy(nonce[4:], "PS-Msg05")
-	log.Debugf("Using nonce for encryption: %x", nonce)
-
 	x := cipher.Seal(nil, nonce, deviceInfoTlv.bytes(), nil)
-	log.Debugf("🔒 Encrypted TLV: %x", x)
+	fmt.Printf("[DEBUG] exchangeDeviceInfo: encrypted deviceInfo TLV (%d bytes)\n", len(x))
 
 	encryptedTlv := newTlvBuffer()
 	encryptedTlv.writeByte(typeState, 0x05)
 	encryptedTlv.writeData(typeEncryptedData, x)
 
-	log.Debug("📤 Sending encrypted TLV to device")
 	err = t.controlChannel.writeEvent(&pairingData{
 		data:        encryptedTlv.bytes(),
 		kind:        "setupManualPairing",
 		sendingHost: "SL-1876",
 	})
 	if err != nil {
-		log.WithError(err).Error("Failed to send pairing data to device")
+		fmt.Printf("[DEBUG] exchangeDeviceInfo: failed to send encrypted device info: %v\n", err)
 		return err
 	}
+	fmt.Println("[DEBUG] exchangeDeviceInfo: sent encrypted device info")
 
-	// Receive device's response
-	log.Debug("📥 Waiting for device encrypted response")
 	var encRes pairingData
 	err = t.controlChannel.readEvent(&encRes)
 	if err != nil {
-		log.WithError(err).Error("Failed to read pairing response")
+		fmt.Printf("[DEBUG] exchangeDeviceInfo: failed to read encrypted response: %v\n", err)
 		return err
 	}
+	fmt.Printf("[DEBUG] exchangeDeviceInfo: received response TLV (%d bytes)\n", len(encRes.data))
 
 	encrData, err := tlvReader(encRes.data).readCoalesced(typeEncryptedData)
 	if err != nil {
-		log.WithError(err).Error("Failed to extract encrypted data from TLV")
+		fmt.Printf("[DEBUG] exchangeDeviceInfo: failed to parse encrypted response: %v\n", err)
 		return err
 	}
-	copy(nonce[4:], "PS-Msg06")
-	log.Debugf("Using nonce for decrypting device response: %x", nonce)
+	fmt.Printf("[DEBUG] exchangeDeviceInfo: extracted encrypted data (%d bytes)\n", len(encrData))
 
+	copy(nonce[4:], "PS-Msg06")
 	_, err = cipher.Open(nil, nonce, encrData, nil)
 	if err != nil {
-		log.WithError(err).Error("Failed to decrypt device response")
+		fmt.Printf("[DEBUG] exchangeDeviceInfo: failed to decrypt response: %v\n", err)
 		return err
 	}
+	fmt.Println("[DEBUG] exchangeDeviceInfo: successfully decrypted device response")
 
-	log.Debug("✅ Device response decrypted successfully")
 	return nil
 }
