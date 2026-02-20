@@ -29,7 +29,7 @@ var (
 			return &buf
 		},
 	}
-	
+
 	// Pool for larger buffers (log chunks)
 	largeBufferPool = sync.Pool{
 		New: func() interface{} {
@@ -77,7 +77,7 @@ func (c *OsTraceCodec) ReadStreamChunk(r *bufio.Reader) ([]byte, error) {
 	headerBufPtr := smallBufferPool.Get().(*[]byte)
 	headerBuf := (*headerBufPtr)[:5] // 1 status + 4 length
 	defer smallBufferPool.Put(headerBufPtr)
-	
+
 	// Read status byte and length in one go
 	if _, err := io.ReadFull(r, headerBuf); err != nil {
 		return nil, err
@@ -108,12 +108,12 @@ func (c *OsTraceCodec) ReadStreamChunkWithDeadline(r *bufio.Reader, updateDeadli
 	if err := updateDeadline(); err != nil {
 		return nil, fmt.Errorf("failed to set read deadline: %w", err)
 	}
-	
+
 	// Get a small buffer from pool for header
 	headerBufPtr := smallBufferPool.Get().(*[]byte)
 	headerBuf := (*headerBufPtr)[:5] // 1 status + 4 length
 	defer smallBufferPool.Put(headerBufPtr)
-	
+
 	// Read status byte and length in one go
 	if _, err := io.ReadFull(r, headerBuf); err != nil {
 		return nil, err
@@ -165,12 +165,12 @@ func (c *Connection) updateReadDeadline() error {
 	if c.readTimeout == 0 {
 		return nil // No timeout configured
 	}
-	
+
 	conn := c.deviceConn.Conn()
 	if conn == nil {
 		return nil // Connection doesn't support deadlines
 	}
-	
+
 	deadline := time.Now().Add(c.readTimeout)
 	c.readDeadline = deadline
 	return conn.SetReadDeadline(deadline)
@@ -230,19 +230,19 @@ type ProcessListResponse struct {
 func recvall(r io.Reader, size int) ([]byte, error) {
 	data := make([]byte, size)
 	totalRead := 0
-	
+
 	for totalRead < size {
 		// Read remaining data
 		n, err := r.Read(data[totalRead:])
 		if n > 0 {
 			totalRead += n
 		}
-		
+
 		// If we got all the data we need, return success
 		if totalRead == size {
 			return data, nil
 		}
-		
+
 		// Handle errors
 		if err != nil {
 			// EOF is only acceptable if we haven't read anything yet
@@ -257,7 +257,7 @@ func recvall(r io.Reader, size int) ([]byte, error) {
 			return data[:totalRead], fmt.Errorf("read error after %d bytes: %w", totalRead, err)
 		}
 	}
-	
+
 	return data, nil
 }
 
@@ -284,7 +284,7 @@ func (c *Connection) GetProcessList() ([]ProcessInfo, error) {
 	}
 
 	reader := c.deviceConn.Reader()
-	
+
 	// Ignore first received unknown byte (per pymobiledevice3)
 	skipByte := make([]byte, 1)
 	if _, err := reader.Read(skipByte); err != nil {
@@ -330,7 +330,7 @@ func (c *Connection) GetProcessList() ([]ProcessInfo, error) {
 			}
 		}
 		return processes, nil
-		
+
 	case map[string]interface{}:
 		// Tunnel format: map of PID -> process info
 		processes := make([]ProcessInfo, 0, len(payload))
@@ -347,7 +347,7 @@ func (c *Connection) GetProcessList() ([]ProcessInfo, error) {
 			}
 		}
 		return processes, nil
-		
+
 	default:
 		return nil, fmt.Errorf("unexpected Payload type: %T", response.Payload)
 	}
@@ -455,13 +455,13 @@ func (c *Connection) ReadLogEntry() (*LogEntry, error) {
 	// Read stream chunk with deadline support if configured
 	var chunkBytes []byte
 	var err error
-	
+
 	if c.readTimeout > 0 {
 		chunkBytes, err = c.codec.ReadStreamChunkWithDeadline(c.reader, c.updateReadDeadline)
 	} else {
 		chunkBytes, err = c.codec.ReadStreamChunk(c.reader)
 	}
-	
+
 	if err != nil {
 		if err == io.EOF {
 			return nil, err
@@ -480,63 +480,63 @@ func (c *Connection) ReadLogEntry() (*LogEntry, error) {
 
 	// Parse according to pymobiledevice3 struct
 	offset := 0
-	
+
 	// Skip 9 bytes (initial padding)
 	offset += 9
-	
+
 	// PID (4 bytes, little-endian)
-	pid := binary.LittleEndian.Uint32(chunkBytes[offset:offset+4])
+	pid := binary.LittleEndian.Uint32(chunkBytes[offset : offset+4])
 	offset += 4
-	
+
 	// Skip 42 bytes
 	offset += 42
-	
+
 	// Timestamp seconds (4 bytes, little-endian)
-	timestampSec := binary.LittleEndian.Uint32(chunkBytes[offset:offset+4])
+	timestampSec := binary.LittleEndian.Uint32(chunkBytes[offset : offset+4])
 	offset += 4
-	
+
 	// Skip 4 bytes
 	offset += 4
-	
+
 	// Timestamp microseconds (4 bytes, little-endian)
-	timestampUS := binary.LittleEndian.Uint32(chunkBytes[offset:offset+4])
+	timestampUS := binary.LittleEndian.Uint32(chunkBytes[offset : offset+4])
 	offset += 4
-	
+
 	// Skip 1 byte
 	offset += 1
-	
+
 	// Level (1 byte)
 	level := chunkBytes[offset]
 	offset += 1
-	
+
 	// Skip 38 bytes
 	offset += 38
-	
+
 	// Image name size (2 bytes, little-endian)
-	imageNameLen := binary.LittleEndian.Uint16(chunkBytes[offset:offset+2])
+	imageNameLen := binary.LittleEndian.Uint16(chunkBytes[offset : offset+2])
 	offset += 2
-	
+
 	// Message size (2 bytes, little-endian)
-	messageLen := binary.LittleEndian.Uint16(chunkBytes[offset:offset+2])
+	messageLen := binary.LittleEndian.Uint16(chunkBytes[offset : offset+2])
 	offset += 2
-	
+
 	// Skip 6 bytes
 	offset += 6
-	
+
 	// Subsystem size (4 bytes, little-endian)
-	subsystemLen := binary.LittleEndian.Uint32(chunkBytes[offset:offset+4])
+	subsystemLen := binary.LittleEndian.Uint32(chunkBytes[offset : offset+4])
 	offset += 4
-	
+
 	// Category size (4 bytes, little-endian)
-	categoryLen := binary.LittleEndian.Uint32(chunkBytes[offset:offset+4])
+	categoryLen := binary.LittleEndian.Uint32(chunkBytes[offset : offset+4])
 	offset += 4
-	
+
 	// Skip 4 bytes after category size
 	offset += 4
-	
+
 	// Now read the variable-length fields
 	reader := bytes.NewReader(chunkBytes[offset:])
-	
+
 	// Read filename (null-terminated)
 	filename := []byte{}
 	for {
@@ -546,19 +546,19 @@ func (c *Connection) ReadLogEntry() (*LogEntry, error) {
 		}
 		filename = append(filename, b)
 	}
-	
+
 	// Read image_name
 	imageName := make([]byte, imageNameLen)
 	if _, err := io.ReadFull(reader, imageName); err != nil {
 		return nil, fmt.Errorf("failed to read image name: %w", err)
 	}
-	
+
 	// Read message
 	message := make([]byte, messageLen)
 	if _, err := io.ReadFull(reader, message); err != nil {
 		return nil, fmt.Errorf("failed to read message: %w", err)
 	}
-	
+
 	// Create log entry
 	entry := &LogEntry{
 		Timestamp: time.Unix(int64(timestampSec), int64(timestampUS)*1000),
@@ -568,7 +568,7 @@ func (c *Connection) ReadLogEntry() (*LogEntry, error) {
 		Message:   strings.TrimRight(string(message), "\x00"),
 		Filename:  string(filename),
 	}
-	
+
 	// Read optional subsystem and category
 	if subsystemLen > 0 && subsystemLen < 10000 {
 		subsystem := make([]byte, subsystemLen)
@@ -576,14 +576,14 @@ func (c *Connection) ReadLogEntry() (*LogEntry, error) {
 			entry.Subsystem = strings.TrimRight(string(subsystem), "\x00")
 		}
 	}
-	
+
 	if categoryLen > 0 && categoryLen < 10000 {
 		category := make([]byte, categoryLen)
 		if _, err := io.ReadFull(reader, category); err == nil {
 			entry.Category = strings.TrimRight(string(category), "\x00")
 		}
 	}
-	
+
 	return entry, nil
 }
 
@@ -760,4 +760,3 @@ func FormatLogEntry(entry *LogEntry) string {
 		entry.Message,
 	)
 }
-

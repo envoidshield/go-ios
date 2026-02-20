@@ -1,3 +1,4 @@
+//go:build sonic
 // +build sonic
 
 package ostrace_test
@@ -7,7 +8,7 @@ import (
 	"time"
 
 	"reflect"
-	
+
 	"github.com/bytedance/sonic"
 	"github.com/danielpaulus/go-ios/ios/ostrace"
 )
@@ -24,7 +25,7 @@ func BenchmarkSonicJSON(b *testing.B) {
 		Category:  "UI",
 		Subsystem: "com.apple.springboard",
 	}
-	
+
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		data, _ := sonic.Marshal(entry)
@@ -36,7 +37,7 @@ func BenchmarkSonicJSON(b *testing.B) {
 func BenchmarkSonicJSONPretouch(b *testing.B) {
 	// Pretouch the type for better performance
 	sonic.Pretouch(reflect.TypeOf(ostrace.LogEntry{}))
-	
+
 	entry := &ostrace.LogEntry{
 		Timestamp: time.Now(),
 		ProcessID: 1234,
@@ -47,10 +48,10 @@ func BenchmarkSonicJSONPretouch(b *testing.B) {
 		Category:  "UI",
 		Subsystem: "com.apple.springboard",
 	}
-	
+
 	b.ReportAllocs()
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		data, _ := sonic.Marshal(entry)
 		_ = data

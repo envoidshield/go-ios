@@ -22,7 +22,7 @@ type Filter struct {
 	Operator string   `yaml:"operator,omitempty"` // "CONTAINS", "EQUALS", "NOT_CONTAINS", "STARTS_WITH", "ENDS_WITH", "REGEX"
 	Value    string   `yaml:"value,omitempty"`    // Pattern/value to match
 	Children []Filter `yaml:"children,omitempty"` // For nested filters (AND/OR/NOT)
-	
+
 	// Pre-compiled regex for performance (not serialized)
 	// Eliminates 10-100x overhead from compiling regex on every log entry
 	compiledRegex *regexp.Regexp `yaml:"-"`
@@ -68,14 +68,14 @@ func precompileFilter(filter *Filter) error {
 		}
 		filter.compiledRegex = compiled
 	}
-	
+
 	// Recursively compile children
 	for i := range filter.Children {
 		if err := precompileFilter(&filter.Children[i]); err != nil {
 			return err
 		}
 	}
-	
+
 	return nil
 }
 

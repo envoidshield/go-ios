@@ -393,7 +393,7 @@ The commands work as following:
 		// Regular device connection
 		device, err = ios.GetDevice(udid)
 	}
-	
+
 	// device address and rsd port are only available after the tunnel started
 	if !tunnelCommand && pymobileTunnelErr != nil {
 		exitIfError("Device not found: "+udid, err)
@@ -2354,14 +2354,14 @@ func parsedJsonSyslog() func(log string) string {
 
 func runOsTrace(device ios.DeviceEntry, arguments docopt.Opts) {
 	log.Debug("Run OsTrace.")
-	
+
 	// Check if we're just listing processes
 	listProcesses, _ := arguments.Bool("--list")
 	if listProcesses {
 		conn, err := ostrace.New(device)
 		exitIfError("OsTrace connection failed", err)
 		defer conn.Close()
-		
+
 		processes, err := conn.GetProcessList()
 		if err != nil {
 			log.Printf("Failed to get process list: %v", err)
@@ -2369,7 +2369,7 @@ func runOsTrace(device ios.DeviceEntry, arguments docopt.Opts) {
 			log.Println("Try using 'ios tunnel start' to enable tunnel connection, or use 'ios ps' command instead.")
 			os.Exit(1)
 		}
-		
+
 		if JSONdisabled {
 			fmt.Printf("%-6s %s\n", "PID", "NAME")
 			fmt.Println(strings.Repeat("-", 40))
@@ -2381,48 +2381,48 @@ func runOsTrace(device ios.DeviceEntry, arguments docopt.Opts) {
 		}
 		return
 	}
-	
+
 	// Check if we're downloading archives
 	archive, _ := arguments.Bool("--archive")
 	if archive {
 		conn, err := ostrace.New(device)
 		exitIfError("OsTrace connection failed", err)
 		defer conn.Close()
-		
+
 		archiveFile, _ := arguments.String("--archive-file")
 		if archiveFile == "" {
 			archiveFile = "logs.pax"
 		}
-		
+
 		fmt.Printf("Downloading archived logs...\n")
 		archiveData, err := conn.GetArchivedLogs()
 		exitIfError("Failed to get archived logs", err)
-		
+
 		file, err := os.Create(archiveFile)
 		exitIfError("Failed to create archive file", err)
 		defer file.Close()
-		
+
 		_, err = file.Write(archiveData)
 		exitIfError("Failed to write archive file", err)
-		
+
 		fmt.Printf("Archived logs saved to %s\n", archiveFile)
 		return
 	}
-	
+
 	// Otherwise, stream logs
 	conn, err := ostrace.New(device)
 	exitIfError("OsTrace connection failed", err)
 	defer conn.Close()
-	
+
 	// Set up streaming config
 	config := ostrace.StreamConfig{
 		PID: -1,
 	}
-	
+
 	// Check for process filtering
 	processName, _ := arguments.String("--process")
 	pidStr, _ := arguments.String("--pid")
-	
+
 	if processName != "" {
 		// Try to find the process by name
 		processes, err := conn.GetProcessList()
@@ -2451,17 +2451,17 @@ func runOsTrace(device ios.DeviceEntry, arguments docopt.Opts) {
 			log.Printf("Filtering logs for PID %d", pid)
 		}
 	}
-	
+
 	// Load filters if specified
 	var filterConfig *ostrace.FilterConfig
-	
+
 	// Check for simple filter
 	simpleFilter, _ := arguments.String("--filter")
 	if simpleFilter != "" {
 		filterConfig = ostrace.CreateSimpleFilter(simpleFilter)
 		log.Printf("Using simple filter: message contains '%s'", simpleFilter)
 	}
-	
+
 	// Check for filter config file (overrides simple filter)
 	filterConfigPath, _ := arguments.String("--filter-config")
 	if filterConfigPath != "" {
@@ -2470,22 +2470,22 @@ func runOsTrace(device ios.DeviceEntry, arguments docopt.Opts) {
 		exitIfError("Failed to load filter config", err)
 		log.Printf("Loaded filter configuration from %s", filterConfigPath)
 	}
-	
+
 	// Start streaming
 	err = conn.StartStreaming(config)
 	exitIfError("Failed to start streaming", err)
-	
+
 	// Set up signal handling
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	
+
 	go func() {
 		<-c
 		log.Info("Stopping log stream...")
 		conn.StopStreaming()
 		os.Exit(0)
 	}()
-	
+
 	// Read and display logs
 	for {
 		entry, err := conn.ReadLogEntry()
@@ -2497,18 +2497,18 @@ func runOsTrace(device ios.DeviceEntry, arguments docopt.Opts) {
 			log.Printf("Error reading log entry: %v", err)
 			continue
 		}
-		
+
 		// Apply filters
 		if filterConfig != nil && !ostrace.EvaluateFilters(entry, filterConfig) {
 			continue // Skip this entry
 		}
-		
+
 		if JSONdisabled {
 			// Format: [timestamp] process[pid]: message
-			fmt.Printf("[%s] %s[%d]: %s\n", 
-				entry.Timestamp.Format("2006-01-02 15:04:05.000"), 
-				entry.ImageName, 
-				entry.ProcessID, 
+			fmt.Printf("[%s] %s[%d]: %s\n",
+				entry.Timestamp.Format("2006-01-02 15:04:05.000"),
+				entry.ImageName,
+				entry.ProcessID,
 				entry.Message)
 		} else {
 			fmt.Println(convertToJSONString(entry))

@@ -188,13 +188,13 @@ func NewWithAddrPortDevice(addr string, port int, d DeviceEntry) (RsdService, er
 func newRsdServiceFromTcpConn(conn *net.TCPConn) (RsdService, error) {
 	h, err := http.NewHttpConnection(conn)
 	if err != nil {
-        _ = conn.Close()
+		_ = conn.Close()
 		return RsdService{}, fmt.Errorf("newRsdServiceFromTcpConn: failed to connect to http2: %w", err)
 	}
 
 	x, err := CreateXpcConnection(h)
 	if err != nil {
-        _ = h.Close()
+		_ = h.Close()
 		return RsdService{}, fmt.Errorf("newRsdServiceFromTcpConn: failed to create xpc connection: %w", err)
 	}
 
@@ -246,26 +246,26 @@ func (s RsdService) Handshake() (RsdHandshakeResponse, error) {
 // HandshakeWithTimeout performs Handshake but enforces a timeout.
 // If the timeout elapses, the underlying connection is closed to unblock any pending reads.
 func (s RsdService) HandshakeWithTimeout(timeout time.Duration) (RsdHandshakeResponse, error) {
-    if timeout <= 0 {
-        return s.Handshake()
-    }
+	if timeout <= 0 {
+		return s.Handshake()
+	}
 
-    type result struct {
-        resp RsdHandshakeResponse
-        err  error
-    }
-    done := make(chan result, 1)
-    go func() {
-        r, err := s.Handshake()
-        done <- result{resp: r, err: err}
-    }()
+	type result struct {
+		resp RsdHandshakeResponse
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		r, err := s.Handshake()
+		done <- result{resp: r, err: err}
+	}()
 
-    select {
-    case r := <-done:
-        return r.resp, r.err
-    case <-time.After(timeout):
-        // Close the connection to abort the in-flight handshake read
-        _ = s.Close()
-        return RsdHandshakeResponse{}, fmt.Errorf("Handshake: timeout after %v", timeout)
-    }
+	select {
+	case r := <-done:
+		return r.resp, r.err
+	case <-time.After(timeout):
+		// Close the connection to abort the in-flight handshake read
+		_ = s.Close()
+		return RsdHandshakeResponse{}, fmt.Errorf("Handshake: timeout after %v", timeout)
+	}
 }

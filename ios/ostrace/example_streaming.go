@@ -118,4 +118,3 @@ Example 3: Download Archived Logs
 		fmt.Println("Extract with: pax -r < device_logs.pax")
 	}
 */
-

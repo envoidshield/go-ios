@@ -65,7 +65,7 @@ func StartService(device DeviceEntry, serviceName string) (StartServiceResponse,
 			EnableServiceSSL: false, // RSD handles SSL differently
 		}, nil
 	}
-	
+
 	// Fall back to usbmuxd for legacy connections
 	lockdown, err := ConnectLockdownWithSession(device)
 	if err != nil {

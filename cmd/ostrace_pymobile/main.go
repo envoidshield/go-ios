@@ -53,7 +53,7 @@ func main() {
 
 	if *pymobileTunnel > 0 {
 		logrus.Infof("Connecting through pymobiledevice3 tunnel on port %d...", *pymobileTunnel)
-		
+
 		if *udid == "" {
 			// List devices from tunnel
 			deviceList, err := ios.ListDevicesWithPyMobileTunnel(*pymobileTunnel)
@@ -72,34 +72,34 @@ func main() {
 				logrus.Fatalf("Failed to get device through tunnel: %v", err)
 			}
 		}
-		
+
 		logrus.Infof("Connected to device %s through pymobiledevice3 tunnel", device.Properties.SerialNumber)
 	} else if *rsdHost != "" {
 		logrus.Infof("Connecting through RSD at %s:%d...", *rsdHost, *rsdPort)
-		
+
 		if *udid == "" {
 			logrus.Fatal("UDID is required when using RSD connection")
 		}
-		
+
 		// Create RSD service connection
 		rsdService, err := ios.NewWithAddrPort(*rsdHost, *rsdPort)
 		if err != nil {
 			logrus.Fatalf("Failed to connect to RSD service: %v", err)
 		}
 		defer rsdService.Close()
-		
+
 		// Perform RSD handshake
 		rsdProvider, err := rsdService.Handshake()
 		if err != nil {
 			logrus.Fatalf("Failed to perform RSD handshake: %v", err)
 		}
-		
+
 		// Get device with RSD provider
 		device, err = ios.GetDeviceWithAddress(*udid, *rsdHost, rsdProvider)
 		if err != nil {
 			logrus.Fatalf("Failed to get device via RSD: %v", err)
 		}
-		
+
 		logrus.Infof("Connected to device %s through RSD", device.Properties.SerialNumber)
 	} else {
 		// Fall back to regular connection
@@ -137,7 +137,7 @@ func main() {
 	if *archive {
 		fmt.Printf("Downloading archived logs to %s...\n", *archiveFile)
 		startTime := time.Now()
-		
+
 		archiveData, err := conn.GetArchivedLogsWithProgress(func(current, total int) {
 			if total > 0 {
 				progress := float64(current) / float64(total) * 100
@@ -146,7 +146,7 @@ func main() {
 				fmt.Printf("\rDownloaded: %d bytes", current)
 			}
 		})
-		
+
 		if err != nil {
 			logrus.Fatalf("\nFailed to get archived logs: %v", err)
 		}
@@ -222,8 +222,8 @@ func main() {
 
 		// Format and display the log entry
 		timestamp := entry.Timestamp.Format("15:04:05.000")
-		fmt.Printf("[%s] %-16s %-7s %s\n", 
-			timestamp, 
+		fmt.Printf("[%s] %-16s %-7s %s\n",
+			timestamp,
 			entry.ImageName,
 			entry.Level,
 			entry.Message)

@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/danielpaulus/go-ios/ios/http"
@@ -93,7 +92,7 @@ func ConnectToService(device DeviceEntry, serviceName string) (DeviceConnectionI
 	if device.SupportsRsd() {
 		return ConnectToShimService(device, serviceName)
 	}
-	
+
 	// Fall back to usbmuxd for legacy connections
 	startServiceResponse, err := StartService(device, serviceName)
 	if err != nil {
@@ -129,8 +128,8 @@ func ConnectToShimService(device DeviceEntry, service string) (DeviceConnectionI
 	}
 	err = RsdCheckin(conn)
 	if err != nil {
-        _ = conn.Close()
-        return nil, err
+		_ = conn.Close()
+		return nil, err
 	}
 	return NewDeviceConnectionWithRWC(conn), nil
 }
@@ -143,15 +142,15 @@ func ConnectToXpcServiceTunnelIface(device DeviceEntry, serviceName string) (*xp
 	}
 	port := device.Rsd.GetPort(serviceName)
 
-    conn, err := ConnectTUNDevice(device.Address, port, device)
+	conn, err := ConnectTUNDevice(device.Address, port, device)
 	if err != nil {
 		return nil, fmt.Errorf("ConnectToHttp2: failed to dial: %w", err)
 	}
 
 	h, err := http.NewHttpConnection(conn)
 	if err != nil {
-        _ = conn.Close()
-        return nil, fmt.Errorf("ConnectToXpcServiceTunnelIface: failed to connect to http2: %w", err)
+		_ = conn.Close()
+		return nil, fmt.Errorf("ConnectToXpcServiceTunnelIface: failed to connect to http2: %w", err)
 	}
 	return CreateXpcConnection(h)
 }
@@ -216,7 +215,7 @@ func ConnectLockdownWithSession(device DeviceEntry) (*LockDownConnection, error)
 	if device.SupportsRsd() {
 		return nil, fmt.Errorf("ConnectLockdownWithSession: RSD/tunnel devices don't support usbmuxd lockdown connections")
 	}
-	
+
 	muxConnection, err := NewUsbMuxConnectionSimple()
 	if err != nil {
 		return nil, fmt.Errorf("USBMuxConnection failed with: %v", err)
@@ -293,23 +292,23 @@ func initializeXpcConnection(h *http.HttpConnection) error {
 // automatically. Otherwise it will try a operating system level TUN device.
 func ConnectTUNDevice(remoteIp string, port int, d DeviceEntry) (*net.TCPConn, error) {
 	if !d.UserspaceTUN {
-        return connectTUN(remoteIp, port)
+		return connectTUN(remoteIp, port)
 	}
 
-    addr, _ := net.ResolveTCPAddr("tcp4", fmt.Sprintf("%s:%d", d.UserspaceTUNHost, d.UserspaceTUNPort))
-    dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 1 * time.Second}
-    nc, err := dialer.Dial("tcp4", addr.String())
+	addr, _ := net.ResolveTCPAddr("tcp4", fmt.Sprintf("%s:%d", d.UserspaceTUNHost, d.UserspaceTUNPort))
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 1 * time.Second}
+	nc, err := dialer.Dial("tcp4", addr.String())
 	if err != nil {
 		return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to dial: %w", err)
 	}
-    conn := nc.(*net.TCPConn)
-	
+	conn := nc.(*net.TCPConn)
+
 	// CRITICAL PERFORMANCE OPTIMIZATIONS for high-throughput log streaming
 	// Disable Nagle's algorithm - eliminates 40-200ms latency per packet
 	if err := conn.SetNoDelay(true); err != nil {
 		log.Warnf("Failed to set TCP_NODELAY: %v", err)
 	}
-	
+
 	// Increase socket buffers for high-throughput streaming (10K+ logs/sec)
 	// 1MB read buffer reduces syscalls and prevents backpressure to iOS device
 	if err := conn.SetReadBuffer(1024 * 1024); err != nil {
@@ -318,36 +317,34 @@ func ConnectTUNDevice(remoteIp string, port int, d DeviceEntry) (*net.TCPConn, e
 	if err := conn.SetWriteBuffer(256 * 1024); err != nil {
 		log.Warnf("Failed to set write buffer: %v", err)
 	}
-	
+
 	// Set SO_LINGER to 0 to immediately RST on close
 	// This prevents sockets from lingering in CLOSE_WAIT if process is SIGKILL'd
 	// Critical for preventing tunnel exhaustion from orphaned connections
 	rawConn, err := conn.SyscallConn()
 	if err == nil {
-		rawConn.Control(func(fd uintptr) {
-			syscall.SetsockoptLinger(int(fd), syscall.SOL_SOCKET, syscall.SO_LINGER, &syscall.Linger{Onoff: 1, Linger: 0})
-		})
+		setSOLinger(rawConn)
 	}
-	
+
 	err = conn.SetKeepAlive(true)
 	if err != nil {
-        _ = conn.Close()
-        return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive: %w", err)
+		_ = conn.Close()
+		return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive: %w", err)
 	}
 	err = conn.SetKeepAlivePeriod(1 * time.Second)
 	if err != nil {
-        _ = conn.Close()
-        return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive period: %w", err)
+		_ = conn.Close()
+		return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive period: %w", err)
 	}
-    _, err = conn.Write(net.ParseIP(remoteIp).To16())
+	_, err = conn.Write(net.ParseIP(remoteIp).To16())
 	portBytes := make([]byte, 4)
 	binary.LittleEndian.PutUint32(portBytes, uint32(port))
 	_, err1 := conn.Write(portBytes)
-    if err != nil || err1 != nil {
-        _ = conn.Close()
-        return nil, errors.Join(err, err1)
-    }
-    return conn, nil
+	if err != nil || err1 != nil {
+		_ = conn.Close()
+		return nil, errors.Join(err, err1)
+	}
+	return conn, nil
 }
 
 // connect to a operating system level TUN device
@@ -356,19 +353,19 @@ func connectTUN(address string, port int) (*net.TCPConn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ConnectToHttp2WithAddr: failed to resolve address: %w", err)
 	}
-    dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 1 * time.Second}
-    nc, err := dialer.Dial("tcp6", addr.String())
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 1 * time.Second}
+	nc, err := dialer.Dial("tcp6", addr.String())
 	if err != nil {
 		return nil, fmt.Errorf("ConnectToHttp2WithAddr: failed to dial: %w", err)
 	}
-    conn := nc.(*net.TCPConn)
-	
+	conn := nc.(*net.TCPConn)
+
 	// CRITICAL PERFORMANCE OPTIMIZATIONS for high-throughput log streaming
 	// Disable Nagle's algorithm - eliminates 40-200ms latency per packet
 	if err := conn.SetNoDelay(true); err != nil {
 		log.Warnf("Failed to set TCP_NODELAY: %v", err)
 	}
-	
+
 	// Increase socket buffers for high-throughput streaming (10K+ logs/sec)
 	// 1MB read buffer reduces syscalls and prevents backpressure to iOS device
 	if err := conn.SetReadBuffer(1024 * 1024); err != nil {
@@ -377,26 +374,24 @@ func connectTUN(address string, port int) (*net.TCPConn, error) {
 	if err := conn.SetWriteBuffer(256 * 1024); err != nil {
 		log.Warnf("Failed to set write buffer: %v", err)
 	}
-	
+
 	// Set SO_LINGER to 0 to immediately RST on close
 	// This prevents sockets from lingering in CLOSE_WAIT if process is SIGKILL'd
 	// Critical for preventing tunnel exhaustion from orphaned connections
 	rawConn, err := conn.SyscallConn()
 	if err == nil {
-		rawConn.Control(func(fd uintptr) {
-			syscall.SetsockoptLinger(int(fd), syscall.SOL_SOCKET, syscall.SO_LINGER, &syscall.Linger{Onoff: 1, Linger: 0})
-		})
+		setSOLinger(rawConn)
 	}
-	
+
 	err = conn.SetKeepAlive(true)
 	if err != nil {
-        _ = conn.Close()
-        return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive: %w", err)
+		_ = conn.Close()
+		return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive: %w", err)
 	}
 	err = conn.SetKeepAlivePeriod(1 * time.Second)
 	if err != nil {
-        _ = conn.Close()
-        return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive period: %w", err)
+		_ = conn.Close()
+		return nil, fmt.Errorf("ConnectUserSpaceTunnel: failed to set keepalive period: %w", err)
 	}
 
 	return conn, nil

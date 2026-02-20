@@ -84,7 +84,7 @@ streams:
 
 	// Limit CPU usage for IoT
 	runtime.GOMAXPROCS(2)
-	
+
 	// Load configuration
 	config, err := loadConfig(*configFile)
 	if err != nil {
@@ -98,7 +98,7 @@ streams:
 		if _, exists := devices[stream.UDID]; !exists {
 			var device ios.DeviceEntry
 			var err error
-			
+
 			if config.PyMobileTunnel > 0 {
 				// Use pymobile tunnel
 				device, err = ios.GetDeviceWithPyMobileTunnel(stream.UDID, config.PyMobileTunnel)
@@ -114,14 +114,14 @@ streams:
 					os.Exit(1)
 				}
 				defer rsdService.Close()
-				
+
 				// Perform RSD handshake
 				rsdProvider, err := rsdService.Handshake()
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Failed to perform RSD handshake: %v\n", err)
 					os.Exit(1)
 				}
-				
+
 				// Get device with RSD provider
 				device, err = ios.GetDeviceWithAddress(stream.UDID, config.RSDHost, rsdProvider)
 				if err != nil {
@@ -136,7 +136,7 @@ streams:
 					os.Exit(1)
 				}
 			}
-			
+
 			devices[stream.UDID] = device
 		}
 	}
@@ -158,11 +158,11 @@ streams:
 
 	// Start all streams with worker pool
 	fmt.Printf("Starting %d streams with %d workers...\n", len(handlers), config.MaxWorkers)
-	
+
 	// Use a worker pool to limit concurrent processing
 	workChan := make(chan *ostrace.LogEntry, config.BufferSize)
 	var workersWg sync.WaitGroup
-	
+
 	// Start worker pool
 	for i := 0; i < config.MaxWorkers; i++ {
 		workersWg.Add(1)
@@ -260,7 +260,7 @@ func (h *StreamHandler) start(workChan chan<- *ostrace.LogEntry) {
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
-		
+
 		// Start streaming
 		config := ostrace.StreamConfig{PID: h.config.PID}
 		if err := h.conn.StartStreaming(config); err != nil {
@@ -305,12 +305,12 @@ func (h *StreamHandler) start(workChan chan<- *ostrace.LogEntry) {
 func (h *StreamHandler) stop() {
 	close(h.stopChan)
 	h.wg.Wait()
-	
+
 	if h.conn != nil {
 		h.conn.StopStreaming()
 		h.conn.Close()
 	}
-	
+
 	if h.output != nil {
 		h.output.Sync()
 		h.output.Close()
@@ -319,14 +319,14 @@ func (h *StreamHandler) stop() {
 
 func worker(workChan <-chan *ostrace.LogEntry, wg *sync.WaitGroup) {
 	defer wg.Done()
-	
+
 	// Reuse buffer for JSON encoding
 	buf := make([]byte, 0, 1024)
-	
+
 	for entry := range workChan {
 		// Process entry (already filtered)
 		// This is where you could add additional processing
-		
+
 		// For now, just format as needed
 		_ = buf // In real implementation, use this for efficient encoding
 		_ = entry

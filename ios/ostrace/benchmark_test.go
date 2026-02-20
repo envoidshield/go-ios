@@ -48,7 +48,7 @@ func BenchmarkSimpleFilter(b *testing.B) {
 	filter := ostrace.CreateSimpleFilter("SpringBoard")
 	b.ReportAllocs()
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		_ = ostrace.EvaluateFilters(sampleEntry, filter)
 	}
@@ -70,7 +70,7 @@ func BenchmarkComplexFilter(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		_ = ostrace.EvaluateFilters(sampleEntry, config)
 	}
@@ -80,7 +80,7 @@ func BenchmarkComplexFilter(b *testing.B) {
 func BenchmarkLogFormatting(b *testing.B) {
 	b.ReportAllocs()
 	var buf bytes.Buffer
-	
+
 	for i := 0; i < b.N; i++ {
 		buf.Reset()
 		buf.WriteString("[")

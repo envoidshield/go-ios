@@ -81,13 +81,13 @@ func (c *Connection) FastReadLogEntry() (*LogEntry, error) {
 	// Now using buffered reader for high-performance socket reads
 	var chunkBytes []byte
 	var err error
-	
+
 	if c.readTimeout > 0 {
 		chunkBytes, err = c.codec.ReadStreamChunkWithDeadline(c.reader, c.updateReadDeadline)
 	} else {
 		chunkBytes, err = c.codec.ReadStreamChunk(c.reader)
 	}
-	
+
 	if err != nil {
 		return nil, err
 	}
@@ -103,19 +103,19 @@ func (c *Connection) FastReadLogEntry() (*LogEntry, error) {
 
 	// Same parsing logic but with zero-copy strings
 	offset := 9
-	
+
 	// PID
-	entry.ProcessID = int(binary.LittleEndian.Uint32(chunkBytes[offset:offset+4]))
+	entry.ProcessID = int(binary.LittleEndian.Uint32(chunkBytes[offset : offset+4]))
 	offset += 4 + 42
-	
+
 	// Timestamp
-	timestampSec := binary.LittleEndian.Uint32(chunkBytes[offset:offset+4])
+	timestampSec := binary.LittleEndian.Uint32(chunkBytes[offset : offset+4])
 	offset += 8
-	timestampUS := binary.LittleEndian.Uint32(chunkBytes[offset:offset+4])
+	timestampUS := binary.LittleEndian.Uint32(chunkBytes[offset : offset+4])
 	offset += 5
-	
+
 	entry.Timestamp = time.Unix(int64(timestampSec), int64(timestampUS)*1000)
-	
+
 	// Level - use pre-allocated level strings (no allocation per log entry)
 	level := chunkBytes[offset]
 	offset += 1
@@ -124,67 +124,67 @@ func (c *Connection) FastReadLogEntry() (*LogEntry, error) {
 	} else {
 		entry.Level = "unknown"
 	}
-	
+
 	offset += 38
-	
+
 	// String lengths
-	imageNameLen := int(binary.LittleEndian.Uint16(chunkBytes[offset:offset+2]))
+	imageNameLen := int(binary.LittleEndian.Uint16(chunkBytes[offset : offset+2]))
 	offset += 2
-	messageLen := int(binary.LittleEndian.Uint16(chunkBytes[offset:offset+2]))
-	offset += 2 + 6  // 2 for the field, 6 bytes skip
-	subsystemLen := int(binary.LittleEndian.Uint32(chunkBytes[offset:offset+4]))
+	messageLen := int(binary.LittleEndian.Uint16(chunkBytes[offset : offset+2]))
+	offset += 2 + 6 // 2 for the field, 6 bytes skip
+	subsystemLen := int(binary.LittleEndian.Uint32(chunkBytes[offset : offset+4]))
 	offset += 4
-	categoryLen := int(binary.LittleEndian.Uint32(chunkBytes[offset:offset+4]))
+	categoryLen := int(binary.LittleEndian.Uint32(chunkBytes[offset : offset+4]))
 	offset += 4
-	
+
 	// Skip 4 bytes after category size
 	offset += 4
-	
+
 	// Find null-terminated filename
 	filenameStart := offset
 	filenameEnd := offset
 	for filenameEnd < len(chunkBytes) && chunkBytes[filenameEnd] != 0 {
 		filenameEnd++
 	}
-	
+
 	// Use unsafe string conversions (zero-copy)
 	if filenameEnd > filenameStart {
 		entry.Filename = unsafeString(chunkBytes[filenameStart:filenameEnd])
 	}
 	offset = filenameEnd + 1
-	
+
 	// Read other strings with bounds checking
 	if offset+imageNameLen <= len(chunkBytes) {
-		entry.ImageName = unsafeString(chunkBytes[offset:offset+imageNameLen])
+		entry.ImageName = unsafeString(chunkBytes[offset : offset+imageNameLen])
 		offset += imageNameLen
 	}
-	
+
 	if offset+messageLen <= len(chunkBytes) {
 		// Clean up message
-		msg := chunkBytes[offset:offset+messageLen]
+		msg := chunkBytes[offset : offset+messageLen]
 		if idx := bytes.IndexByte(msg, 0); idx >= 0 {
 			msg = msg[:idx]
 		}
 		entry.Message = unsafeString(msg)
 		offset += messageLen
 	}
-	
+
 	if subsystemLen > 0 && offset+int(subsystemLen) <= len(chunkBytes) {
-		sub := chunkBytes[offset:offset+int(subsystemLen)]
+		sub := chunkBytes[offset : offset+int(subsystemLen)]
 		if idx := bytes.IndexByte(sub, 0); idx >= 0 {
 			sub = sub[:idx]
 		}
 		entry.Subsystem = unsafeString(sub)
 		offset += int(subsystemLen)
 	}
-	
+
 	if categoryLen > 0 && offset+int(categoryLen) <= len(chunkBytes) {
-		cat := chunkBytes[offset:offset+int(categoryLen)]
+		cat := chunkBytes[offset : offset+int(categoryLen)]
 		if idx := bytes.IndexByte(cat, 0); idx >= 0 {
 			cat = cat[:idx]
 		}
 		entry.Category = unsafeString(cat)
 	}
-	
+
 	return entry, nil
 }

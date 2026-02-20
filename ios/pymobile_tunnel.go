@@ -67,12 +67,13 @@ func (c *PyMobileTunnelClient) GetTunnelInfo() (map[string][]PyMobileTunnelInfo,
 // existing pymobiledevice3 infrastructure.
 //
 // Usage:
-//   device, err := ios.GetDeviceWithPyMobileTunnel("00008130-000418901E93803A", 49151)
-//   if err != nil {
-//       log.Fatal(err)
-//   }
-//   // Now use device with any service
-//   conn, err := ostrace.New(device)
+//
+//	device, err := ios.GetDeviceWithPyMobileTunnel("00008130-000418901E93803A", 49151)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	// Now use device with any service
+//	conn, err := ostrace.New(device)
 func GetDeviceWithPyMobileTunnel(udid string, tunnelPort int) (DeviceEntry, error) {
 	// First get the regular device
 	device, err := GetDevice(udid)
@@ -99,7 +100,7 @@ func GetDeviceWithPyMobileTunnel(udid string, tunnelPort int) (DeviceEntry, erro
 	// Create RSD connection to the tunnel
 	// IPv6 addresses need to be cleaned up
 	tunnelAddr := strings.Trim(tunnel.TunnelAddress, "[]")
-	
+
 	rsdService, err := NewWithAddrPortDevice(tunnelAddr, tunnel.TunnelPort, device)
 	if err != nil {
 		return DeviceEntry{}, fmt.Errorf("failed to create RSD service: %w", err)

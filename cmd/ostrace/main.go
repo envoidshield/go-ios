@@ -77,7 +77,7 @@ func main() {
 	if *archive {
 		fmt.Printf("Downloading archived logs to %s...\n", *archiveFile)
 		startTime := time.Now()
-		
+
 		archiveData, err := conn.GetArchivedLogsWithProgress(func(current, total int) {
 			if total > 0 {
 				progress := float64(current) / float64(total) * 100
@@ -86,7 +86,7 @@ func main() {
 				fmt.Printf("\rDownloaded: %d bytes", current)
 			}
 		})
-		
+
 		if err != nil {
 			log.Errorf("\nFailed to get archived logs: %v", err)
 			return
@@ -196,4 +196,3 @@ func main() {
 	<-sigChan
 	fmt.Println("\n\nStopping log stream...")
 }
-
