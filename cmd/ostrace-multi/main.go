@@ -77,8 +77,8 @@ streams:
   - name: "device1_apps"
     udid: "00008112-000869810A83A01E"
     filter_file: "filters/apps.yaml"
-    output_file: "logs/device1_apps.jsonl"
-`)
+    output_file: "logs/device1_apps.jsonl"`)
+
 		os.Exit(0)
 	}
 

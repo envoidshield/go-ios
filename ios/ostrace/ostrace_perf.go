@@ -1,5 +1,3 @@
-// +build perf
-
 package ostrace
 
 import (
