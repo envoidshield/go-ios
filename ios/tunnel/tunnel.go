@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -16,7 +17,6 @@ import (
 	"os/exec"
 	"runtime"
 	"time"
-	"encoding/base64"
 
 	"github.com/danielpaulus/go-ios/ios"
 	"github.com/danielpaulus/go-ios/ios/http"
@@ -51,7 +51,7 @@ func ManualPairAndConnectToTunnel2(ctx context.Context, device ios.DeviceEntry, 
 	log.Info("Reminder: stop remoted first with 'sudo pkill -SIGSTOP remoted' and run this with sudo.")
 
 	log.Infof("Getting untrusted tunnel service port for address %s", addr)
-  port := device.Rsd.GetPort("com.apple.internal.dt.coredevice.untrusted.tunnelservice")
+	port := device.Rsd.GetPort("com.apple.internal.dt.coredevice.untrusted.tunnelservice")
 	log.Infof("Got untrusted tunnel service port: %d", port)
 
 	log.Infof("Connecting to TUN device at %s:%d", addr, port)
@@ -107,8 +107,6 @@ func ManualPairAndConnectToTunnel2(ctx context.Context, device ios.DeviceEntry, 
 
 	return t, nil
 }
-
-
 
 // ManualPairAndConnectToTunnel tries to verify an existing pairing, and if this fails it triggers a new manual pairing process.
 // After a successful pairing a tunnel for this device gets started and the tunnel information is returned
@@ -186,8 +184,6 @@ func ManualPairAndConnectToTunnel(ctx context.Context, device ios.DeviceEntry, p
 	return t, nil
 }
 
-
-
 func RemotePair(ctx context.Context, device ios.DeviceEntry, p PairRecordManager, addr string) (RemotePairResult, error) {
 	log.Info("Remote Pair: starting manual pairing and tunnel connection.")
 
@@ -195,7 +191,6 @@ func RemotePair(ctx context.Context, device ios.DeviceEntry, p PairRecordManager
 	//if err != nil{
 	//	return RemotePairResult{}, fmt.Errorf("Remote Pair: failed to device connect: %w", err)
 	//}
-
 
 	port := device.Rsd.GetPort("com.apple.internal.dt.coredevice.untrusted.tunnelservice")
 
@@ -209,7 +204,7 @@ func RemotePair(ctx context.Context, device ios.DeviceEntry, p PairRecordManager
 	if err != nil {
 		return RemotePairResult{}, fmt.Errorf("Remote Pair: failed to create HTTP2 connection: %w", err)
 	}
-	
+
 	xpcConn, err := ios.CreateXpcConnection(h)
 	if err != nil {
 		return RemotePairResult{}, fmt.Errorf("Remote Pair: failed to create RemoteXPC connection: %w", err)

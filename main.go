@@ -452,7 +452,7 @@ The commands work as following:
 				println(string(b))
 			}
 			return
-		}else if pairCommand {
+		} else if pairCommand {
 			tunnels, err := tunnel.ListRunningTunnels(tunnelInfoHost, tunnelInfoPort)
 			if err != nil {
 				exitIfError("failed to get tunnel infos", err)
@@ -472,7 +472,7 @@ The commands work as following:
 			if err != nil {
 				exitIfError("failed to get device", err)
 			}
-			
+
 			if err != nil {
 				exitIfError("cant find port", err)
 			}
@@ -488,12 +488,12 @@ The commands work as following:
 			pm, err := tunnel.NewPairRecordManager(pairRecordsPath)
 			if err != nil {
 				exitIfError("could not creat pair record manager", err)
-			}	
-			_ , err  = tunnel.ManualPairAndConnectToTunnel2(context.TODO(), entryOne , pm, addr)
- 			if err != nil {
+			}
+			_, err = tunnel.ManualPairAndConnectToTunnel2(context.TODO(), entryOne, pm, addr)
+			if err != nil {
 				log.Fatal(err)
-			}     
-		  res, err := tunnel.RemotePair(context.TODO(), entryOne , pm, addr)
+			}
+			res, err := tunnel.RemotePair(context.TODO(), entryOne, pm, addr)
 			if err != nil {
 				log.Fatal(err)
 			}
