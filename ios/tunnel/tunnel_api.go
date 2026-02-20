@@ -213,18 +213,17 @@ func ListRunningTunnels(tunnelInfoHost string, tunnelInfoPort int) ([]Tunnel, er
 }
 
 func FindTunnel(tunnelInfoHost string, tunnelInfoPort int, udid string) (Tunnel, error) {
-    tunnels, err := ListRunningTunnels(tunnelInfoHost, tunnelInfoPort)
-    if err != nil {
-        return Tunnel{}, err
-    }
-    for _, t := range tunnels {
-        if t.Udid == udid {
-            return t, nil
-        }
-    }
-    return Tunnel{}, fmt.Errorf("to tunnel found")
+	tunnels, err := ListRunningTunnels(tunnelInfoHost, tunnelInfoPort)
+	if err != nil {
+		return Tunnel{}, err
+	}
+	for _, t := range tunnels {
+		if t.Udid == udid {
+			return t, nil
+		}
+	}
+	return Tunnel{}, fmt.Errorf("to tunnel found")
 }
-
 
 // TunnelManager starts tunnels for devices when needed (if no tunnel is running yet) and stores the information
 // how those tunnels are reachable (address and remote service discovery port)

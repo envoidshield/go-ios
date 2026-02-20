@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"time"
 
 	"github.com/danielpaulus/go-ios/ios/http"
 	"github.com/danielpaulus/go-ios/ios/xpc"
@@ -90,40 +91,40 @@ func (r RsdPortProviderJson) GetServices() (services map[string]RsdServiceEntry)
 // checkin itself, and the second message contains a 'StartService' request, which does not need any action
 // from the host side
 func RsdCheckin(rw io.ReadWriter) error {
-    req := map[string]interface{}{
-        "Label":           "EnVoid",
-        "ProtocolVersion": "2",
-        "Request":         "RSDCheckin",
-    }
+	req := map[string]interface{}{
+		"Label":           "EnVoid",
+		"ProtocolVersion": "2",
+		"Request":         "RSDCheckin",
+	}
 
-    fmt.Printf("RsdCheckin: Sending checkin request: %+v\n", req)
+	fmt.Printf("RsdCheckin: Sending checkin request: %+v\n", req)
 
-    prw := NewPlistCodecReadWriter(rw, rw)
-    err := prw.Write(req)
-    if err != nil {
-        fmt.Printf("RsdCheckin: Error writing checkin request: %v\n", err)
-        return fmt.Errorf("RsdCheckin: failed to send checkin request: %w", err)
-    }
+	prw := NewPlistCodecReadWriter(rw, rw)
+	err := prw.Write(req)
+	if err != nil {
+		fmt.Printf("RsdCheckin: Error writing checkin request: %v\n", err)
+		return fmt.Errorf("RsdCheckin: failed to send checkin request: %w", err)
+	}
 
-    var checkinResponse map[string]any
-    fmt.Println("RsdCheckin: Reading checkin response...")
-    err = prw.Read(&checkinResponse)
-    if err != nil {
-        fmt.Printf("RsdCheckin: Error reading checkin response: %v\n", err)
-        return fmt.Errorf("RsdCheckin: failed to read checkin response: %w", err)
-    }
-    fmt.Printf("RsdCheckin: Checkin response received: %+v\n", checkinResponse)
+	var checkinResponse map[string]any
+	fmt.Println("RsdCheckin: Reading checkin response...")
+	err = prw.Read(&checkinResponse)
+	if err != nil {
+		fmt.Printf("RsdCheckin: Error reading checkin response: %v\n", err)
+		return fmt.Errorf("RsdCheckin: failed to read checkin response: %w", err)
+	}
+	fmt.Printf("RsdCheckin: Checkin response received: %+v\n", checkinResponse)
 
-    var startService map[string]any
-    fmt.Println("RsdCheckin: Reading start service message...")
-    err = prw.Read(&startService)
-    if err != nil {
-        fmt.Printf("RsdCheckin: Error reading start service message: %v\n", err)
-        return fmt.Errorf("RsdCheckin: failed to read start service message: %w", err)
-    }
-    fmt.Printf("RsdCheckin: Start service message received: %+v\n", startService)
+	var startService map[string]any
+	fmt.Println("RsdCheckin: Reading start service message...")
+	err = prw.Read(&startService)
+	if err != nil {
+		fmt.Printf("RsdCheckin: Error reading start service message: %v\n", err)
+		return fmt.Errorf("RsdCheckin: failed to read start service message: %w", err)
+	}
+	fmt.Printf("RsdCheckin: Start service message received: %+v\n", startService)
 
-    return nil
+	return nil
 }
 
 const port = 58783
@@ -197,11 +198,13 @@ func NewWithAddrPortDevice(addr string, port int, d DeviceEntry) (RsdService, er
 func newRsdServiceFromTcpConn(conn *net.TCPConn) (RsdService, error) {
 	h, err := http.NewHttpConnection(conn)
 	if err != nil {
+		_ = conn.Close()
 		return RsdService{}, fmt.Errorf("newRsdServiceFromTcpConn: failed to connect to http2: %w", err)
 	}
 
 	x, err := CreateXpcConnection(h)
 	if err != nil {
+		_ = h.Close()
 		return RsdService{}, fmt.Errorf("newRsdServiceFromTcpConn: failed to create xpc connection: %w", err)
 	}
 
@@ -247,5 +250,32 @@ func (s RsdService) Handshake() (RsdHandshakeResponse, error) {
 		}, nil
 	} else {
 		return RsdHandshakeResponse{}, fmt.Errorf("Handshake: unknown response")
+	}
+}
+
+// HandshakeWithTimeout performs Handshake but enforces a timeout.
+// If the timeout elapses, the underlying connection is closed to unblock any pending reads.
+func (s RsdService) HandshakeWithTimeout(timeout time.Duration) (RsdHandshakeResponse, error) {
+	if timeout <= 0 {
+		return s.Handshake()
+	}
+
+	type result struct {
+		resp RsdHandshakeResponse
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		r, err := s.Handshake()
+		done <- result{resp: r, err: err}
+	}()
+
+	select {
+	case r := <-done:
+		return r.resp, r.err
+	case <-time.After(timeout):
+		// Close the connection to abort the in-flight handshake read
+		_ = s.Close()
+		return RsdHandshakeResponse{}, fmt.Errorf("Handshake: timeout after %v", timeout)
 	}
 }

@@ -32,7 +32,7 @@ func PairSupervised(device DeviceEntry, p12bytes []byte, p12Password string) err
 	if err != nil {
 		return err
 	}
-  defer usbmuxConn.Close()
+	defer usbmuxConn.Close()
 
 	buid, err := usbmuxConn.ReadBuid()
 	if err != nil {

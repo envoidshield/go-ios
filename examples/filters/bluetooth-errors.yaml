@@ -1,0 +1,10 @@
+# Filter for Bluetooth-related errors
+filters:
+  - type: AND
+    children:
+      - field: subsystem
+        operator: CONTAINS
+        value: bluetooth
+      - field: level
+        operator: EQUALS
+        value: error

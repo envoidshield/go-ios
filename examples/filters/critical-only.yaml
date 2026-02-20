@@ -1,0 +1,12 @@
+# Filter for critical logs only (errors and faults)
+# Minimal processing for IoT devices
+
+filters:
+  - type: OR
+    children:
+      - field: level
+        operator: EQUALS
+        value: "error"
+      - field: level
+        operator: EQUALS
+        value: "fault"

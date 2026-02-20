@@ -44,6 +44,7 @@ import (
 	"github.com/danielpaulus/go-ios/ios/instruments"
 	"github.com/danielpaulus/go-ios/ios/mcinstall"
 	"github.com/danielpaulus/go-ios/ios/notificationproxy"
+	"github.com/danielpaulus/go-ios/ios/ostrace"
 	"github.com/danielpaulus/go-ios/ios/pcap"
 	syslog "github.com/danielpaulus/go-ios/ios/syslog"
 	"github.com/docopt/docopt-go"
@@ -132,6 +133,7 @@ Usage:
   ios setlocationgpx [options] [--gpxfilepath=<gpxfilepath>]
   ios syslog [--parse] [options]
   ios sysmontap [options]
+  ios ostrace [--list] [--process=<name>] [--pid=<pid>] [--archive] [--archive-file=<file>] [--filter=<pattern>] [--filter-config=<file>] [options]
   ios timeformat (24h | 12h | toggle | get) [--force] [options]
   ios tunnel ls [options]
   ios tunnel start [options] [--pair-record-path=<pairrecordpath>] [--userspace]
@@ -156,6 +158,7 @@ Options:
   --proxyurl=<url>          Set this if you want go-ios to use a http proxy for outgoing requests, like for downloading images or contacting Apple during device activation.
   >                         A simple format like: "http://PROXY_LOGIN:PROXY_PASS@proxyIp:proxyPort" works. Otherwise use the HTTP_PROXY system env var.
   --userspace-port=<port>   Optional. Set this if you run a command supplying rsd-port and address and your device is using userspace tunnel
+  --pymobile-tunnel=<port>  Use pymobiledevice3's tunnel daemon on the specified port (default: 49151) instead of go-ios tunnel
 
 The commands work as following:
 	The default output of all commands is JSON. Should you prefer human readable outout, specify the --nojson option with your command.
@@ -256,6 +259,9 @@ The commands work as following:
    ios setlocationgpx [options] [--gpxfilepath=<gpxfilepath>]         Updates the location of the device based on the data in a GPX file. Example: setlocationgpx --gpxfilepath=/home/username/location.gpx
    ios syslog [--parse] [options]                                     Prints a device's log output, Use --parse to parse the fields from the log
    ios sysmontap                                                      Get system stats like MEM, CPU
+   ios ostrace [--list] [--process=<name>] [--pid=<pid>] [--archive] [--archive-file=<file>] [--filter=<pattern>] [--filter-config=<file>] [options]  Advanced log streaming using os_trace_relay service. 
+   >                                                                  Use --list to show running processes, --process or --pid to filter logs, --archive to download archived logs
+   >                                                                  Use --filter for simple content filtering, --filter-config for complex YAML-based filters
    ios timeformat (24h | 12h | toggle | get) [--force] [options] Sets, or returns the state of the "time format". iOS 11+ only (Use --force to try on older versions).
    ios tunnel ls                                                      List currently started tunnels. Use --enabletun to activate using TUN devices rather than user space network. Requires sudo/admin shells. 
    ios tunnel start [options] [--pair-record-path=<pairrecordpath>] [--enabletun]   Creates a tunnel connection to the device. If the device was not paired with the host yet, device pairing will also be executed.
@@ -353,10 +359,44 @@ The commands work as following:
 	}
 
 	userspaceTunnelPort, userspaceTunnelErr := arguments.Int("--userspace-port")
+	pymobileTunnelPort, pymobileTunnelErr := arguments.Int("--pymobile-tunnel")
 
-	device, err := ios.GetDevice(udid)
+	// Check if pymobile tunnel should be used
+	var device ios.DeviceEntry
+	if pymobileTunnelErr == nil {
+		// Use pymobiledevice3 tunnel
+		if pymobileTunnelPort == 0 {
+			pymobileTunnelPort = ios.DefaultPyMobileTunnelPort
+		}
+		if udid == "" {
+			// If no UDID specified, get the first device from pymobile tunnel
+			deviceList, err := ios.ListDevicesWithPyMobileTunnel(pymobileTunnelPort)
+			if err != nil || len(deviceList.DeviceList) == 0 {
+				log.WithError(err).Warn("Failed to list devices from pymobiledevice3 tunnel")
+				device, err = ios.GetDevice(udid)
+				exitIfError("Device not found: "+udid, err)
+			} else {
+				device = deviceList.DeviceList[0]
+				log.Infof("Using device %s from pymobiledevice3 tunnel", device.Properties.SerialNumber)
+			}
+		} else {
+			device, err = ios.GetDeviceWithPyMobileTunnel(udid, pymobileTunnelPort)
+			if err != nil {
+				// Fall back to regular device if pymobile tunnel fails
+				log.WithError(err).Warn("Failed to connect through pymobiledevice3 tunnel, falling back to regular connection")
+				device, err = ios.GetDevice(udid)
+				exitIfError("Device not found: "+udid, err)
+			} else {
+				log.Infof("Connected to device through pymobiledevice3 tunnel on port %d", pymobileTunnelPort)
+			}
+		}
+	} else {
+		// Regular device connection
+		device, err = ios.GetDevice(udid)
+	}
+
 	// device address and rsd port are only available after the tunnel started
-	if !tunnelCommand {
+	if !tunnelCommand && pymobileTunnelErr != nil {
 		exitIfError("Device not found: "+udid, err)
 		if addressErr == nil && rsdErr == nil {
 			if userspaceTunnelErr == nil {
@@ -365,7 +405,7 @@ The commands work as following:
 				device.UserspaceTUNPort = userspaceTunnelPort
 			}
 			device = deviceWithRsdProvider(device, udid, address, rsdPort)
-		} else {
+		} else if pymobileTunnelErr != nil { // Only try tunnel info if not using pymobile tunnel
 			info, err := tunnel.TunnelInfoForDevice(device.Properties.SerialNumber, tunnelInfoHost, tunnelInfoPort)
 			if err == nil {
 				device.UserspaceTUNPort = info.UserspaceTUNPort
@@ -412,7 +452,7 @@ The commands work as following:
 				println(string(b))
 			}
 			return
-		}else if pairCommand {
+		} else if pairCommand {
 			tunnels, err := tunnel.ListRunningTunnels(tunnelInfoHost, tunnelInfoPort)
 			if err != nil {
 				exitIfError("failed to get tunnel infos", err)
@@ -432,7 +472,7 @@ The commands work as following:
 			if err != nil {
 				exitIfError("failed to get device", err)
 			}
-			
+
 			if err != nil {
 				exitIfError("cant find port", err)
 			}
@@ -448,12 +488,12 @@ The commands work as following:
 			pm, err := tunnel.NewPairRecordManager(pairRecordsPath)
 			if err != nil {
 				exitIfError("could not creat pair record manager", err)
-			}	
-			_ , err  = tunnel.ManualPairAndConnectToTunnel2(context.TODO(), entryOne , pm, addr)
- 			if err != nil {
+			}
+			_, err = tunnel.ManualPairAndConnectToTunnel2(context.TODO(), entryOne, pm, addr)
+			if err != nil {
 				log.Fatal(err)
-			}     
-		  res, err := tunnel.RemotePair(context.TODO(), entryOne , pm, addr)
+			}
+			res, err := tunnel.RemotePair(context.TODO(), entryOne, pm, addr)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -697,6 +737,12 @@ The commands work as following:
 		parse, _ := arguments.Bool("--parse")
 
 		runSyslog(device, parse)
+		return
+	}
+
+	b, _ = arguments.Bool("ostrace")
+	if b {
+		runOsTrace(device, arguments)
 		return
 	}
 
@@ -956,8 +1002,8 @@ The commands work as following:
 			exitIfError("browsing apps failed", err)
 
 			for _, app := range response {
-				if app.CFBundleIdentifier == bundleID {
-					processName = app.CFBundleExecutable
+				if app.CFBundleIdentifier() == bundleID {
+					processName = app.CFBundleExecutable()
 					break
 				}
 			}
@@ -1848,7 +1894,7 @@ func startAx(device ios.DeviceEntry, arguments docopt.Opts) {
 		}
 
 		for i := 0; i < 3; i++ {
-			conn.GetElement()
+			conn.GetElement(context.Background())
 			time.Sleep(time.Second)
 		}
 		/*	conn.GetElement()
@@ -2028,14 +2074,14 @@ func printInstalledApps(device ios.DeviceEntry, system bool, all bool, list bool
 
 	if list {
 		for _, v := range response {
-			fmt.Printf("%s %s %s\n", v.CFBundleIdentifier, v.CFBundleName, v.CFBundleShortVersionString)
+			fmt.Printf("%s %s %s\n", v.CFBundleIdentifier(), v.CFBundleName(), v.CFBundleShortVersionString())
 		}
 		return
 	}
 	if filesharing {
 		for _, v := range response {
-			if v.UIFileSharingEnabled {
-				fmt.Printf("%s %s %s\n", v.CFBundleIdentifier, v.CFBundleName, v.CFBundleShortVersionString)
+			if v.UIFileSharingEnabled() {
+				fmt.Printf("%s %s %s\n", v.CFBundleIdentifier(), v.CFBundleName(), v.CFBundleShortVersionString())
 			}
 		}
 		return
@@ -2207,7 +2253,7 @@ func outputProcessListNoJSON(device ios.DeviceEntry, processes []instruments.Pro
 		log.Error("browsing installed apps failed. bundleID will not be included in output")
 	} else {
 		for _, app := range response {
-			appInfoByExecutableName[app.CFBundleExecutable] = app
+			appInfoByExecutableName[app.CFBundleExecutable()] = app
 		}
 	}
 
@@ -2229,7 +2275,7 @@ func outputProcessListNoJSON(device ios.DeviceEntry, processes []instruments.Pro
 		bundleID := ""
 		appInfo, exists := appInfoByExecutableName[processInfo.Name]
 		if exists {
-			bundleID = appInfo.CFBundleIdentifier
+			bundleID = appInfo.CFBundleIdentifier()
 		}
 		fmt.Printf("%*d %-*s %s  %s\n", maxPidLength, processInfo.Pid, maxNameLength, processInfo.Name, processInfo.StartDate.Format("2006-01-02 15:04:05"), bundleID)
 	}
@@ -2353,6 +2399,170 @@ func parsedJsonSyslog() func(log string) string {
 		}
 
 		return convertToJSONString(log_entry)
+	}
+}
+
+func runOsTrace(device ios.DeviceEntry, arguments docopt.Opts) {
+	log.Debug("Run OsTrace.")
+
+	// Check if we're just listing processes
+	listProcesses, _ := arguments.Bool("--list")
+	if listProcesses {
+		conn, err := ostrace.New(device)
+		exitIfError("OsTrace connection failed", err)
+		defer conn.Close()
+
+		processes, err := conn.GetProcessList()
+		if err != nil {
+			log.Printf("Failed to get process list: %v", err)
+			log.Println("Note: Process list may fail on direct USB connections when response exceeds 16KB.")
+			log.Println("Try using 'ios tunnel start' to enable tunnel connection, or use 'ios ps' command instead.")
+			os.Exit(1)
+		}
+
+		if JSONdisabled {
+			fmt.Printf("%-6s %s\n", "PID", "NAME")
+			fmt.Println(strings.Repeat("-", 40))
+			for _, proc := range processes {
+				fmt.Printf("%-6d %s\n", proc.PID, proc.Label)
+			}
+		} else {
+			fmt.Println(convertToJSONString(processes))
+		}
+		return
+	}
+
+	// Check if we're downloading archives
+	archive, _ := arguments.Bool("--archive")
+	if archive {
+		conn, err := ostrace.New(device)
+		exitIfError("OsTrace connection failed", err)
+		defer conn.Close()
+
+		archiveFile, _ := arguments.String("--archive-file")
+		if archiveFile == "" {
+			archiveFile = "logs.pax"
+		}
+
+		fmt.Printf("Downloading archived logs...\n")
+		archiveData, err := conn.GetArchivedLogs()
+		exitIfError("Failed to get archived logs", err)
+
+		file, err := os.Create(archiveFile)
+		exitIfError("Failed to create archive file", err)
+		defer file.Close()
+
+		_, err = file.Write(archiveData)
+		exitIfError("Failed to write archive file", err)
+
+		fmt.Printf("Archived logs saved to %s\n", archiveFile)
+		return
+	}
+
+	// Otherwise, stream logs
+	conn, err := ostrace.New(device)
+	exitIfError("OsTrace connection failed", err)
+	defer conn.Close()
+
+	// Set up streaming config
+	config := ostrace.StreamConfig{
+		PID: -1,
+	}
+
+	// Check for process filtering
+	processName, _ := arguments.String("--process")
+	pidStr, _ := arguments.String("--pid")
+
+	if processName != "" {
+		// Try to find the process by name
+		processes, err := conn.GetProcessList()
+		if err != nil {
+			log.Printf("Warning: Failed to get process list: %v", err)
+			log.Println("Streaming all logs without filtering")
+		} else {
+			found := false
+			for _, proc := range processes {
+				if proc.Label == processName {
+					config.PID = proc.PID
+					found = true
+					log.Printf("Found process '%s' with PID %d", processName, proc.PID)
+					break
+				}
+			}
+			if !found {
+				log.Printf("Warning: Process '%s' not found", processName)
+				log.Println("Streaming all logs without filtering")
+			}
+		}
+	} else if pidStr != "" {
+		pid, err := strconv.Atoi(pidStr)
+		if err == nil {
+			config.PID = pid
+			log.Printf("Filtering logs for PID %d", pid)
+		}
+	}
+
+	// Load filters if specified
+	var filterConfig *ostrace.FilterConfig
+
+	// Check for simple filter
+	simpleFilter, _ := arguments.String("--filter")
+	if simpleFilter != "" {
+		filterConfig = ostrace.CreateSimpleFilter(simpleFilter)
+		log.Printf("Using simple filter: message contains '%s'", simpleFilter)
+	}
+
+	// Check for filter config file (overrides simple filter)
+	filterConfigPath, _ := arguments.String("--filter-config")
+	if filterConfigPath != "" {
+		var err error
+		filterConfig, err = ostrace.LoadFilterConfig(filterConfigPath)
+		exitIfError("Failed to load filter config", err)
+		log.Printf("Loaded filter configuration from %s", filterConfigPath)
+	}
+
+	// Start streaming
+	err = conn.StartStreaming(config)
+	exitIfError("Failed to start streaming", err)
+
+	// Set up signal handling
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		<-c
+		log.Info("Stopping log stream...")
+		conn.StopStreaming()
+		os.Exit(0)
+	}()
+
+	// Read and display logs
+	for {
+		entry, err := conn.ReadLogEntry()
+		if err != nil {
+			if err == io.EOF {
+				log.Info("Log stream ended")
+				break
+			}
+			log.Printf("Error reading log entry: %v", err)
+			continue
+		}
+
+		// Apply filters
+		if filterConfig != nil && !ostrace.EvaluateFilters(entry, filterConfig) {
+			continue // Skip this entry
+		}
+
+		if JSONdisabled {
+			// Format: [timestamp] process[pid]: message
+			fmt.Printf("[%s] %s[%d]: %s\n",
+				entry.Timestamp.Format("2006-01-02 15:04:05.000"),
+				entry.ImageName,
+				entry.ProcessID,
+				entry.Message)
+		} else {
+			fmt.Println(convertToJSONString(entry))
+		}
 	}
 }
 

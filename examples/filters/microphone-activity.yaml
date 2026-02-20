@@ -1,0 +1,23 @@
+# Filter for microphone-related activity
+filters:
+  # Option 1: Microphone AND Activated
+  - type: AND
+    children:
+      - field: message
+        operator: CONTAINS
+        value: Microphone
+      - field: message
+        operator: CONTAINS
+        value: Activated
+  
+  # Option 2: Microphone AND NOT Disabled
+  - type: AND
+    children:
+      - field: message
+        operator: CONTAINS
+        value: Microphone
+      - type: NOT
+        children:
+          - field: message
+            operator: CONTAINS
+            value: Disabled
