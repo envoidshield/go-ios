@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"runtime"
 	"time"
+	"encoding/base64"
 
 	"github.com/danielpaulus/go-ios/ios"
 	"github.com/danielpaulus/go-ios/ios/http"
@@ -45,47 +46,196 @@ func (t Tunnel) Close() error {
 	return t.closer()
 }
 
+func ManualPairAndConnectToTunnel2(ctx context.Context, device ios.DeviceEntry, p PairRecordManager, addr string) (Tunnel, error) {
+	log.Info("ManualPairAndConnectToTunnel: starting manual pairing and tunnel connection.")
+	log.Info("Reminder: stop remoted first with 'sudo pkill -SIGSTOP remoted' and run this with sudo.")
+
+	log.Infof("Getting untrusted tunnel service port for address %s", addr)
+  port := device.Rsd.GetPort("com.apple.internal.dt.coredevice.untrusted.tunnelservice")
+	log.Infof("Got untrusted tunnel service port: %d", port)
+
+	log.Infof("Connecting to TUN device at %s:%d", addr, port)
+	conn, err := ios.ConnectTUNDevice(addr, port, device)
+	if err != nil {
+		log.Errorf("Failed to connect to TUN device: %v", err)
+		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to connect to TUN device: %w", err)
+	}
+	log.Info("Connected to TUN device successfully.")
+
+	log.Info("Creating HTTP2 connection over TUN device.")
+	h, err := http.NewHttpConnection(conn)
+	if err != nil {
+		log.Errorf("Failed to create HTTP2 connection: %v", err)
+		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to create HTTP2 connection: %w", err)
+	}
+	log.Info("HTTP2 connection created successfully.")
+
+	log.Info("Creating RemoteXPC connection.")
+	xpcConn, err := ios.CreateXpcConnection(h)
+	if err != nil {
+		log.Errorf("Failed to create RemoteXPC connection: %v", err)
+		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to create RemoteXPC connection: %w", err)
+	}
+	log.Info("RemoteXPC connection created successfully.")
+
+	log.Info("Initializing tunnel service with XPC connection.")
+	ts := newTunnelServiceWithXpc(xpcConn, h, p)
+
+	log.Info("Starting manual pairing process.")
+	err = ts.ManualPair()
+	if err != nil {
+		log.Errorf("Manual pairing failed: %v", err)
+		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to pair device: %w", err)
+	}
+	log.Info("Manual pairing completed successfully.")
+
+	log.Info("Creating tunnel listener.")
+	tunnelInfo, err := ts.createTunnelListener()
+	if err != nil {
+		log.Errorf("Failed to create tunnel listener: %v", err)
+		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to create tunnel listener: %w", err)
+	}
+	log.Infof("Tunnel listener created successfully: %+v", tunnelInfo)
+
+	log.Infof("Connecting to the tunnel with address %s", addr)
+	t, err := connectToTunnel(ctx, tunnelInfo, addr, device)
+	if err != nil {
+		log.Errorf("Failed to connect to tunnel: %v", err)
+		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to connect to tunnel: %w", err)
+	}
+	log.Info("Connected to tunnel successfully.")
+
+	return t, nil
+}
+
+
+
 // ManualPairAndConnectToTunnel tries to verify an existing pairing, and if this fails it triggers a new manual pairing process.
 // After a successful pairing a tunnel for this device gets started and the tunnel information is returned
 func ManualPairAndConnectToTunnel(ctx context.Context, device ios.DeviceEntry, p PairRecordManager) (Tunnel, error) {
-	log.Info("ManualPairAndConnectToTunnel: starting manual pairing and tunnel connection, dont forget to stop remoted first with 'sudo pkill -SIGSTOP remoted' and run this with sudo.")
+	log.Info("ManualPairAndConnectToTunnel: starting manual pairing and tunnel connection.")
+	log.Info("Reminder: stop remoted first with 'sudo pkill -SIGSTOP remoted' and run this with sudo.")
+
+	log.Infof("Finding device interface address for device: %+v", device)
 	addr, err := ios.FindDeviceInterfaceAddress(ctx, device)
 	if err != nil {
+		log.Errorf("Failed to find device ethernet interface: %v", err)
 		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to find device ethernet interface: %w", err)
 	}
+	log.Infof("Found device interface address: %s", addr)
 
+	log.Infof("Getting untrusted tunnel service port for address %s", addr)
 	port, err := getUntrustedTunnelServicePort(addr, device)
 	if err != nil {
+		log.Errorf("Could not find port for '%s': %v", untrustedTunnelServiceName, err)
 		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: could not find port for '%s'", untrustedTunnelServiceName)
 	}
+	log.Infof("Got untrusted tunnel service port: %d", port)
+
+	log.Infof("Connecting to TUN device at %s:%d", addr, port)
 	conn, err := ios.ConnectTUNDevice(addr, port, device)
 	if err != nil {
+		log.Errorf("Failed to connect to TUN device: %v", err)
 		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to connect to TUN device: %w", err)
 	}
+	log.Info("Connected to TUN device successfully.")
+
+	log.Info("Creating HTTP2 connection over TUN device.")
 	h, err := http.NewHttpConnection(conn)
 	if err != nil {
+		log.Errorf("Failed to create HTTP2 connection: %v", err)
 		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to create HTTP2 connection: %w", err)
 	}
+	log.Info("HTTP2 connection created successfully.")
 
+	log.Info("Creating RemoteXPC connection.")
 	xpcConn, err := ios.CreateXpcConnection(h)
 	if err != nil {
+		log.Errorf("Failed to create RemoteXPC connection: %v", err)
 		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to create RemoteXPC connection: %w", err)
 	}
+	log.Info("RemoteXPC connection created successfully.")
+
+	log.Info("Initializing tunnel service with XPC connection.")
 	ts := newTunnelServiceWithXpc(xpcConn, h, p)
 
+	log.Info("Starting manual pairing process.")
 	err = ts.ManualPair()
 	if err != nil {
+		log.Errorf("Manual pairing failed: %v", err)
 		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to pair device: %w", err)
 	}
+	log.Info("Manual pairing completed successfully.")
+
+	log.Info("Creating tunnel listener.")
 	tunnelInfo, err := ts.createTunnelListener()
 	if err != nil {
+		log.Errorf("Failed to create tunnel listener: %v", err)
 		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to create tunnel listener: %w", err)
 	}
+	log.Infof("Tunnel listener created successfully: %+v", tunnelInfo)
+
+	log.Infof("Connecting to the tunnel with address %s", addr)
 	t, err := connectToTunnel(ctx, tunnelInfo, addr, device)
 	if err != nil {
+		log.Errorf("Failed to connect to tunnel: %v", err)
 		return Tunnel{}, fmt.Errorf("ManualPairAndConnectToTunnel: failed to connect to tunnel: %w", err)
 	}
+	log.Info("Connected to tunnel successfully.")
+
 	return t, nil
+}
+
+
+
+func RemotePair(ctx context.Context, device ios.DeviceEntry, p PairRecordManager, addr string) (RemotePairResult, error) {
+	log.Info("Remote Pair: starting manual pairing and tunnel connection.")
+
+	//devConn, err := ios.ConnectToShimService(device, "com.apple.syslog_relay.shim.remote")
+	//if err != nil{
+	//	return RemotePairResult{}, fmt.Errorf("Remote Pair: failed to device connect: %w", err)
+	//}
+
+
+	port := device.Rsd.GetPort("com.apple.internal.dt.coredevice.untrusted.tunnelservice")
+
+	conn, err := ios.ConnectTUNDevice(addr, port, device)
+
+	if err != nil {
+		return RemotePairResult{}, fmt.Errorf("Remote Pair: failed to connect to TUN device: %w", err)
+	}
+
+	h, err := http.NewHttpConnection(conn)
+	if err != nil {
+		return RemotePairResult{}, fmt.Errorf("Remote Pair: failed to create HTTP2 connection: %w", err)
+	}
+	
+	xpcConn, err := ios.CreateXpcConnection(h)
+	if err != nil {
+		return RemotePairResult{}, fmt.Errorf("Remote Pair: failed to create RemoteXPC connection: %w", err)
+	}
+
+	ts := newTunnelServiceWithXpc(xpcConn, h, p)
+
+	publicKeyB64 := base64.StdEncoding.EncodeToString(ts.pairRecords.selfId.PublicKey)
+	privateKeyB64 := base64.StdEncoding.EncodeToString(ts.pairRecords.selfId.PrivateKey)
+
+	fmt.Printf("[DEBUG] PublicKey (base64): %s\n", publicKeyB64)
+	fmt.Printf("[DEBUG] PrivateKey (base64): %s\n", privateKeyB64)
+
+	hostKey, err := ts.ManualPairGetHostKey()
+	if err != nil {
+		return RemotePairResult{}, fmt.Errorf("Remote Pair: failed to pair device: %w", err)
+	}
+	//hostKeyB64 := base64.StdEncoding.EncodeToString(hostKey)
+
+	result := RemotePairResult{
+		PublicKey:           publicKeyB64,
+		PrivateKey:          privateKeyB64,
+		RemoteUnlockHostKey: hostKey,
+	}
+
+	return result, nil
 }
 
 func getUntrustedTunnelServicePort(addr string, device ios.DeviceEntry) (int, error) {
@@ -303,7 +453,7 @@ func forwardDataToInterface(ctx context.Context, conn quic.Connection, w io.Writ
 func exchangeCoreTunnelParameters(stream io.ReadWriteCloser) (tunnelParameters, error) {
 	rq, err := json.Marshal(map[string]interface{}{
 		"type": "clientHandshakeRequest",
-		"mtu":  1280,
+		"mtu":  16000,
 	})
 	if err != nil {
 		return tunnelParameters{}, err

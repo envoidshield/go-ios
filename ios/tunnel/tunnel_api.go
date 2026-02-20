@@ -212,6 +212,20 @@ func ListRunningTunnels(tunnelInfoHost string, tunnelInfoPort int) ([]Tunnel, er
 	return info, nil
 }
 
+func FindTunnel(tunnelInfoHost string, tunnelInfoPort int, udid string) (Tunnel, error) {
+    tunnels, err := ListRunningTunnels(tunnelInfoHost, tunnelInfoPort)
+    if err != nil {
+        return Tunnel{}, err
+    }
+    for _, t := range tunnels {
+        if t.Udid == udid {
+            return t, nil
+        }
+    }
+    return Tunnel{}, fmt.Errorf("to tunnel found")
+}
+
+
 // TunnelManager starts tunnels for devices when needed (if no tunnel is running yet) and stores the information
 // how those tunnels are reachable (address and remote service discovery port)
 type TunnelManager struct {
@@ -384,7 +398,6 @@ type manualPairingTunnelStart struct {
 }
 
 func (m manualPairingTunnelStart) StartTunnel(ctx context.Context, device ios.DeviceEntry, p PairRecordManager, version *semver.Version, userspaceTUN bool) (Tunnel, error) {
-
 	if version.GreaterThan(semver.MustParse("17.4.0")) {
 		if userspaceTUN {
 			tun, err := ConnectUserSpaceTunnelLockdown(device, device.UserspaceTUNPort)
