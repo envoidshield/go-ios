@@ -46,10 +46,4 @@ jobs:
         run: go test -v -tags=fast ./...
 
       - name: Verify code formatting
-        run: |
-          UNFORMATTED=$(gofmt -l .)
-          if [ -n "$UNFORMATTED" ]; then
-            echo "The following files need gofmt:"
-            echo "$UNFORMATTED"
-            exit 1
-          fi
+        run: test -z "$(gofmt -l .)"
