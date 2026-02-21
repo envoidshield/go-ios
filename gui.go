@@ -76,29 +76,29 @@ type GUIApp struct {
 	currentState   UIState
 
 	// UI components
-	mainContainer    *fyne.Container
-	logoImage        *fyne.Container
-	titleLabel       *widget.Label
-	stepLabel        *widget.Label
+	mainContainer     *fyne.Container
+	logoImage         *fyne.Container
+	titleLabel        *widget.Label
+	stepLabel         *widget.Label
 	progressIndicator *widget.ProgressBar
-	statusCard       *widget.Card
-	instructionLabel *widget.Label
-	deviceNameLabel  *widget.Label
-	actionButton     *widget.Button
-	cancelButton     *widget.Button
-	closeButton      *widget.Button
-	detailsLabel     *widget.Label
-	spinner          *widget.ProgressBarInfinite
-	mainMenu         *fyne.MainMenu
+	statusCard        *widget.Card
+	instructionLabel  *widget.Label
+	deviceNameLabel   *widget.Label
+	actionButton      *widget.Button
+	cancelButton      *widget.Button
+	closeButton       *widget.Button
+	detailsLabel      *widget.Label
+	spinner           *widget.ProgressBarInfinite
+	mainMenu          *fyne.MainMenu
 
 	// Legacy components (for compatibility)
-	statusLabel    *widget.Label
-	deviceListBox  *widget.List
-	startButton    *widget.Button
-	stopButton     *widget.Button
-	refreshButton  *widget.Button
-	pairButton     *widget.Button
-	progressBar    *widget.ProgressBar
+	statusLabel        *widget.Label
+	deviceListBox      *widget.List
+	startButton        *widget.Button
+	stopButton         *widget.Button
+	refreshButton      *widget.Button
+	pairButton         *widget.Button
+	progressBar        *widget.ProgressBar
 	pairingStatusLabel *widget.Label
 	balenaStatusLabel  *widget.Label
 	lastPairingInfo    *widget.Label
@@ -288,7 +288,7 @@ func (g *GUIApp) setupUI() {
 	// === WATERMARK BACKGROUND - Aligned to bottom ===
 	watermarkImg := canvas.NewImageFromResource(resourceWatermarkPng)
 	watermarkImg.FillMode = canvas.ImageFillContain
-	watermarkImg.Translucency = 0.83 // Transparent watermark
+	watermarkImg.Translucency = 0.83                // Transparent watermark
 	watermarkImg.SetMinSize(fyne.NewSize(450, 450)) // Set minimum size
 
 	// Create a centered container for the watermark at bottom
@@ -783,18 +783,18 @@ func (g *GUIApp) getDeviceName(udid string) string {
 	if err != nil {
 		return ""
 	}
-	
+
 	lockdown, err := ios.ConnectLockdownWithSession(device)
 	if err != nil {
 		return ""
 	}
 	defer lockdown.Close()
-	
+
 	deviceName, err := lockdown.GetValue("DeviceName")
 	if err != nil {
 		return ""
 	}
-	
+
 	if name, ok := deviceName.(string); ok {
 		return name
 	}
@@ -816,7 +816,7 @@ func (g *GUIApp) parseSelectedDevice(deviceStr string) {
 				rsdPort = port
 			}
 		}
-		
+
 		// Extract UDID from the device string or get it from the tunnel list
 		udid := g.extractUdidFromDeviceString(deviceStr)
 		if udid == "" {
@@ -833,7 +833,7 @@ func (g *GUIApp) parseSelectedDevice(deviceStr string) {
 				}
 			}
 		}
-		
+
 		if udid != "" {
 			// Create a tunnel object for pairing
 			g.selectedDevice = &tunnel.Tunnel{
@@ -874,7 +874,7 @@ func (g *GUIApp) extractUdidFromDeviceString(deviceStr string) string {
 func (g *GUIApp) postToBalena(device *tunnel.Tunnel, hostKey string, privateKey string, publicKey string) (bool, string) {
 	// Balena endpoint configuration
 	balenaURL := "http://192.168.42.1:8000/devices/trust"
-	
+
 	// Prepare device data with all required fields
 	deviceData := map[string]interface{}{
 		"udid":                   device.Udid,
@@ -883,44 +883,44 @@ func (g *GUIApp) postToBalena(device *tunnel.Tunnel, hostKey string, privateKey 
 		"hostKey":                hostKey,
 		"pairedAt":               time.Now().Format(time.RFC3339),
 		"deviceName":             g.getDeviceName(device.Udid),
-		"device_type":            "iPhone", // Required field
+		"device_type":            "iPhone",   // Required field
 		"private_key":            privateKey, // Ed25519 private key (base64 encoded)
 		"public_key":             publicKey,  // Ed25519 public key (base64 encoded)
-		"remote_unlock_host_key": hostKey, // Use hostKey as remote unlock host key
+		"remote_unlock_host_key": hostKey,    // Use hostKey as remote unlock host key
 	}
-	
+
 	// Convert to JSON
 	jsonData, err := json.Marshal(deviceData)
 	if err != nil {
 		debugLog("Error marshaling device data: %v", err)
 		return false, fmt.Sprintf("JSON marshaling error: %v", err)
 	}
-	
+
 	// Print the POST request data
 	debugLog("===== POST Request to Balena =====")
 	debugLog("URL: %s", balenaURL)
 	debugLog("JSON Data: %s", string(jsonData))
 	debugLog("=================================")
-	
+
 	// Create HTTP request
 	req, err := http.NewRequest("POST", balenaURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		debugLog("Error creating request: %v", err)
 		return false, fmt.Sprintf("Request creation error: %v", err)
 	}
-	
+
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "iOS-Tunnel-Manager/1.0")
-	
+
 	// Set Basic Authentication
 	req.SetBasicAuth("admin", "XLQS8Rv07N7dBshRZifP")
-	
+
 	// Create HTTP client with timeout
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
-	
+
 	// Send request
 	resp, err := client.Do(req)
 	if err != nil {
@@ -928,14 +928,14 @@ func (g *GUIApp) postToBalena(device *tunnel.Tunnel, hostKey string, privateKey 
 		return false, fmt.Sprintf("Network error: %v", err)
 	}
 	defer resp.Body.Close()
-	
+
 	// Read response
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		debugLog("Error reading response: %v", err)
 		return false, fmt.Sprintf("Response reading error: %v", err)
 	}
-	
+
 	// Check response status
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		debugLog("Successfully posted to Balena. Response: %s", string(body))
@@ -950,53 +950,53 @@ func (g *GUIApp) postToBalena(device *tunnel.Tunnel, hostKey string, privateKey 
 func (g *GUIApp) fetchAllDeviceIDs() []int {
 	apiBase := "http://192.168.42.1:8000/api/devices"
 	url := fmt.Sprintf("%s?page=1&size=500", apiBase)
-	
+
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 	}
-	
+
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		debugLog("[!] Failed to create request: %v", err)
 		return []int{}
 	}
-	
+
 	req.SetBasicAuth("admin", "XLQS8Rv07N7dBshRZifP")
 	req.Header.Set("Content-Type", "application/json")
-	
+
 	resp, err := client.Do(req)
 	if err != nil {
 		debugLog("[!] Failed to list devices: %v", err)
 		return []int{}
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != 200 {
 		debugLog("[!] Failed to list devices: HTTP %d", resp.StatusCode)
 		return []int{}
 	}
-	
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		debugLog("[!] Failed to read response: %v", err)
 		return []int{}
 	}
-	
+
 	// Debug: log the raw response
 	debugLog("Raw API response: %s", string(body))
-	
+
 	var data struct {
 		Items []struct {
 			DeviceID int `json:"device_id"`
 		} `json:"items"`
 	}
-	
+
 	if err := json.Unmarshal(body, &data); err != nil {
 		debugLog("[!] Failed to parse response: %v", err)
 		debugLog("Response body was: %s", string(body))
 		return []int{}
 	}
-	
+
 	deviceIDs := make([]int, 0, len(data.Items))
 	for _, item := range data.Items {
 		if item.DeviceID > 0 { // Only include valid device IDs (skip 0 or negative)
@@ -1006,7 +1006,7 @@ func (g *GUIApp) fetchAllDeviceIDs() []int {
 			debugLog("Skipping invalid device_id: %d", item.DeviceID)
 		}
 	}
-	
+
 	debugLog("[+] Found %d valid devices", len(deviceIDs))
 	return deviceIDs
 }
@@ -1015,36 +1015,36 @@ func (g *GUIApp) fetchAllDeviceIDs() []int {
 func (g *GUIApp) deleteDevice(deviceID int) bool {
 	apiBase := "http://192.168.42.1:8000/api/devices"
 	url := fmt.Sprintf("%s/remove", apiBase)
-	
+
 	debugLog("[•] Deleting device %d...", deviceID)
-	
+
 	payload := map[string]int{"device_id": deviceID}
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		debugLog("[✗] Failed to marshal request: %v", err)
 		return false
 	}
-	
+
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 	}
-	
+
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		debugLog("[✗] Failed to create request: %v", err)
 		return false
 	}
-	
+
 	req.SetBasicAuth("admin", "XLQS8Rv07N7dBshRZifP")
 	req.Header.Set("Content-Type", "application/json")
-	
+
 	resp, err := client.Do(req)
 	if err != nil {
 		debugLog("[✗] Failed to delete %d: %v", deviceID, err)
 		return false
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		debugLog("[✓] Deleted %d", deviceID)
 		return true
@@ -1263,8 +1263,8 @@ func (g *GUIApp) handlePairingError(userMessage string, err error) {
 
 		// Detect common error patterns and provide helpful messages
 		if strings.Contains(errorMsg, "failed to pair device") ||
-		   strings.Contains(errorMsg, "setupSessionKey") ||
-		   strings.Contains(errorMsg, "pairingData") {
+			strings.Contains(errorMsg, "setupSessionKey") ||
+			strings.Contains(errorMsg, "pairingData") {
 			g.detailsLabel.SetText("Please ensure:\n• Device is unlocked\n• You tapped 'Trust' on device\n• Try unplugging and reconnecting")
 		} else if strings.Contains(errorMsg, "connection refused") {
 			g.detailsLabel.SetText("Connection failed. Please check USB cable.")
@@ -1281,8 +1281,6 @@ func (g *GUIApp) handlePairingError(userMessage string, err error) {
 	}
 	g.detailsLabel.Show()
 }
-
-
 
 // Run starts the GUI application
 func (g *GUIApp) Run() {

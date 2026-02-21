@@ -384,4 +384,3 @@ func main() {
 
 	log.Println("Auto-Trust Service stopped")
 }
-

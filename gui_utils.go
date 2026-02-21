@@ -155,13 +155,13 @@ func splitDeviceString(deviceStr string) []string {
 	// Split by " | " to get components
 	// New format: "📱 DeviceName | Address | Port: Y" or "📱 iPhone (UDID...) | Address | Port: Y"
 	parts := strings.Split(deviceStr, " | ")
-	
+
 	// Ensure we have at least 3 parts (device name, address, port)
 	if len(parts) < 3 {
 		// Return mock data if parsing fails
 		return []string{"📱 iPhone", "192.168.1.100", "Port: 58783"}
 	}
-	
+
 	return parts
 }
 
@@ -172,7 +172,7 @@ func deviceWithRsdProvider(device ios.DeviceEntry, udid string, address string, 
 		log.Printf("Invalid address or port: address=%s, port=%d", address, rsdPort)
 		return device
 	}
-	
+
 	rsdService, err := ios.NewWithAddrPortDevice(address, rsdPort, device)
 	if err != nil {
 		log.Printf("Error creating RSD service: %v", err)
@@ -183,19 +183,19 @@ func deviceWithRsdProvider(device ios.DeviceEntry, udid string, address string, 
 			log.Printf("Error closing RSD service: %v", closeErr)
 		}
 	}()
-	
+
 	rsdProvider, err := rsdService.Handshake()
 	if err != nil {
 		log.Printf("Error performing RSD handshake: %v", err)
 		return device
 	}
-	
+
 	device1, err := ios.GetDeviceWithAddress(udid, address, rsdProvider)
 	if err != nil {
 		log.Printf("Error getting device with address: %v", err)
 		return device
 	}
-	
+
 	// Preserve tunnel settings
 	device1.UserspaceTUN = device.UserspaceTUN
 	device1.UserspaceTUNHost = device.UserspaceTUNHost

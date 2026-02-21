@@ -1,17 +1,17 @@
 package tunnel
 
 import (
+	"bytes"
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
+	log "github.com/sirupsen/logrus"
+	"golang.org/x/crypto/ed25519"
+	"howett.net/plist"
 	"os"
 	"path"
 	"strings"
-	"bytes"
-	"github.com/google/uuid"
-	"golang.org/x/crypto/ed25519"
-	"howett.net/plist"
-  log "github.com/sirupsen/logrus"
 )
 
 type selfIdentity struct {
@@ -125,9 +125,9 @@ func createSelfIdentity(p string) (selfIdentity, error) {
 	_, _ = rand.Read(irk)
 
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-  data := map[string][]byte{
+	data := map[string][]byte{
 		"privateKey": priv.Seed(),
-    "publicKey": pub,
+		"publicKey":  pub,
 	}
 
 	// Create a buffer to hold the plist output
@@ -142,19 +142,19 @@ func createSelfIdentity(p string) (selfIdentity, error) {
 
 	// Print the result as a string (XML plist)
 	log.Debugf("%s", string(plistBytes))
-  
+
 	if err != nil {
 		return selfIdentity{}, fmt.Errorf("createSelfIdentity: failed to create key pair: %w", err)
 	}
-  namespace := uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8") // Example: DNS namespace
-  name := "EnVoid"
-  uuidV3 := uuid.NewMD5(namespace, []byte(name))
-  si := selfIdentity{
-      Identifier: strings.ToUpper(uuidV3.String()),
-      Irk:        irk,
-      PrivateKey: priv.Seed(),
-      PublicKey:  pub,
-  }
+	namespace := uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8") // Example: DNS namespace
+	name := "EnVoid"
+	uuidV3 := uuid.NewMD5(namespace, []byte(name))
+	si := selfIdentity{
+		Identifier: strings.ToUpper(uuidV3.String()),
+		Irk:        irk,
+		PrivateKey: priv.Seed(),
+		PublicKey:  pub,
+	}
 
 	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {

@@ -142,7 +142,7 @@ func handleDevice(device *gousb.Device) error {
 			slog.Error("failed sending control2", slog.Any("error", err))
 			return fmt.Errorf("handleDevice: failed sending control2 for device %s with err %w", serial, err)
 		}
-		
+
 		// Control commands cause device to re-enumerate with new USB address.
 		// This device handle is now invalid. Return error to trigger retry.
 		// Next poll (500ms) will find the re-enumerated device with 5 configs.

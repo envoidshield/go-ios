@@ -127,12 +127,12 @@ func (r *NcmWrapper) ReadDatagrams() ([]ethernet.Frame, error) {
 	if h.Signature != headerSignature {
 		return result, fmt.Errorf("ReadDatagrams: wrong header signature: %x", h.Signature)
 	}
-	
+
 	// Validate block length (sanity check - BlockLen is uint16 so max is 65535)
 	if h.BlockLen < h.HeaderLen {
 		return result, fmt.Errorf("ReadDatagrams: invalid block length: %d (header: %d)", h.BlockLen, h.HeaderLen)
 	}
-	
+
 	if h.NdpIndex >= h.BlockLen || h.NdpIndex < h.HeaderLen {
 		return result, fmt.Errorf("ReadDatagrams: invalid NDP index: %d (blockLen: %d)", h.NdpIndex, h.BlockLen)
 	}
@@ -161,43 +161,43 @@ func (r *NcmWrapper) ReadDatagrams() ([]ethernet.Frame, error) {
 	if dh.NextNpdIndex != 0 {
 		// Chained NDP headers - log warning but continue with first header
 		// iOS devices don't typically use this, but don't crash if they do
-		slog.Warn("chained NDP headers not fully supported, using first header only", 
+		slog.Warn("chained NDP headers not fully supported, using first header only",
 			"nextNdpIndex", dh.NextNpdIndex, "serial", r.serial)
 	}
 	datagramPointers := ncmTransferBlock[offset+8:]
 	pointer := 0
 	blockLen := len(ncmTransferBlock)
-	
+
 	for {
 		// Bounds check for reading pointer data
 		if pointer+4 > len(datagramPointers) {
 			slog.Error("datagram pointer read out of bounds", "pointer", pointer, "len", len(datagramPointers))
 			break
 		}
-		
+
 		dgIndex := binary.LittleEndian.Uint16(datagramPointers[pointer:])
 		dgLen := binary.LittleEndian.Uint16(datagramPointers[pointer+2:])
 		if dgLen == 0 {
 			break
 		}
-		
+
 		// Bounds check for datagram slice
 		if int(dgIndex)+int(dgLen) > blockLen {
 			slog.Error("datagram out of bounds", "index", dgIndex, "length", dgLen, "blockLen", blockLen)
 			break
 		}
-		
+
 		slog.Debug("datagram", "index", dgIndex, "length", dgLen)
 		datagram := ncmTransferBlock[dgIndex : dgIndex+dgLen]
-		
+
 		// Bounds check for ethernet parsing
 		if len(datagram) > EtherHeaderLength {
 			slog.Debug("parse ethernet frame", "ipv6", iPv6Parser(datagram[EtherHeaderLength:]), "ethernet", EthernetParser(datagram))
 		}
-		
+
 		result = append(result, ethernet.Frame(datagram))
 		pointer += 4
-		
+
 		if pointer > int(dh.Length-8) {
 			slog.Debug("reached end of datagram pointers")
 			break

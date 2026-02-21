@@ -2,10 +2,10 @@ package tunnel
 
 import (
 	"crypto/sha512"
+	"encoding/hex"
 	"fmt"
-  log "github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"github.com/tadglines/go-pkgs/crypto/srp"
-  "encoding/hex"
 )
 
 type srpInfo struct {
@@ -18,7 +18,7 @@ type srpInfo struct {
 
 // newSrpInfo initializes a new SRP session with the given public key and salt values.
 func newSrpInfo(salt, publicKey []byte) (srpInfo, error) {
-  log.Debug("Initializing SRP with rfc5054.3072 and sha512")
+	log.Debug("Initializing SRP with rfc5054.3072 and sha512")
 	s, err := srp.NewSRP("rfc5054.3072", sha512.New, func(salt, password []byte) []byte {
 		h1 := sha512.New()
 		h2 := sha512.New()
@@ -64,6 +64,6 @@ func newSrpInfo(salt, publicKey []byte) (srpInfo, error) {
 }
 
 func (s srpInfo) verifyServerProof(p []byte) bool {
-  log.Debug("compute the SRP shered secret")
+	log.Debug("compute the SRP shered secret")
 	return s.c.VerifyServerAuthenticator(p)
 }
