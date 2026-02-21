@@ -33,7 +33,7 @@ func Start(c chan os.Signal) error {
 	defer ctx.Close()
 	for {
 		select {
-		case <-time.After(5 * time.Second):
+		case <-time.After(500 * time.Millisecond):
 			checkDevices(ctx)
 			printStatus()
 		case <-c:
@@ -130,6 +130,7 @@ func handleDevice(device *gousb.Device) error {
 	slog.Info("available configs", "configs", device.Desc.Configs, "len", confLen, "serial", serial)
 
 	if confLen != 5 {
+		slog.Info("enabling NCM config via control commands", "serial", serial, "currentConfigs", confLen)
 		_, err = device.Control(0xc0, 69, 0, 0, make([]byte, 4))
 		if err != nil {
 			slog.Error("failed sending control1", slog.Any("error", err))
@@ -141,6 +142,12 @@ func handleDevice(device *gousb.Device) error {
 			slog.Error("failed sending control2", slog.Any("error", err))
 			return fmt.Errorf("handleDevice: failed sending control2 for device %s with err %w", serial, err)
 		}
+
+		// Control commands cause device to re-enumerate with new USB address.
+		// This device handle is now invalid. Return error to trigger retry.
+		// Next poll (500ms) will find the re-enumerated device with 5 configs.
+		slog.Info("NCM enabled, waiting for device re-enumeration", "serial", serial)
+		return fmt.Errorf("device re-enumerating after NCM enable")
 	}
 
 	cfg, err := device.Config(5)

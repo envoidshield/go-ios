@@ -1,16 +1,17 @@
 package tunnel
 
 import (
+	"bytes"
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
+	log "github.com/sirupsen/logrus"
+	"golang.org/x/crypto/ed25519"
+	"howett.net/plist"
 	"os"
 	"path"
 	"strings"
-
-	"github.com/google/uuid"
-	"golang.org/x/crypto/ed25519"
-	"howett.net/plist"
 )
 
 type selfIdentity struct {
@@ -57,6 +58,20 @@ func NewPairRecordManager(p string) (PairRecordManager, error) {
 		selfId:        selfId,
 		peersLocation: path.Join(p, "peers"),
 	}, nil
+}
+
+func readDeviceIdentity(p string) (device, error) {
+	selfIdPath := path.Join(p, "selfIdentity.plist")
+	content, err := os.ReadFile(selfIdPath)
+	if err != nil {
+		return device{}, fmt.Errorf("readDeviceIdentity: could not read file: %w", err)
+	}
+	var d device
+	_, err = plist.Unmarshal(content, &d)
+	if err != nil {
+		return device{}, fmt.Errorf("readDeviceIdentity: could not parse plist content: %w", err)
+	}
+	return d, nil
 }
 
 // StoreDeviceInfo stores the provided Device info as a plist encoded file in the `peers/` directory
@@ -110,12 +125,32 @@ func createSelfIdentity(p string) (selfIdentity, error) {
 	_, _ = rand.Read(irk)
 
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	data := map[string][]byte{
+		"privateKey": priv.Seed(),
+		"publicKey":  pub,
+	}
+
+	// Create a buffer to hold the plist output
+	var buf bytes.Buffer
+
+	// Encode the map to XML format
+	encoder := plist.NewEncoder(&buf)
+	encoder.Encode(data)
+
+	// Get the plist bytes
+	plistBytes := buf.Bytes()
+
+	// Print the result as a string (XML plist)
+	log.Debugf("%s", string(plistBytes))
+
 	if err != nil {
 		return selfIdentity{}, fmt.Errorf("createSelfIdentity: failed to create key pair: %w", err)
 	}
-
+	namespace := uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8") // Example: DNS namespace
+	name := "EnVoid"
+	uuidV3 := uuid.NewMD5(namespace, []byte(name))
 	si := selfIdentity{
-		Identifier: strings.ToUpper(uuid.New().String()),
+		Identifier: strings.ToUpper(uuidV3.String()),
 		Irk:        irk,
 		PrivateKey: priv.Seed(),
 		PublicKey:  pub,

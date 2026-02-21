@@ -46,6 +46,7 @@ jobs:
       env:
         GOOS: ${{ matrix.goos }}
         GOARCH: ${{ matrix.goarch }}
+        CGO_ENABLED: 0
       run: |
         echo "Building binaries for ${{ matrix.goos }}/${{ matrix.goarch }}..."
         
@@ -77,3 +78,54 @@ jobs:
           ostrace-${{ matrix.suffix }}
           ostrace-perf-${{ matrix.suffix }}
           ostrace-multi-${{ matrix.suffix }}
+
+  # go-ncm requires CGO (libusb), so we build on native runners only
+  # Each runner builds for its native architecture (no cross-compilation)
+  build-ncm:
+    name: Build go-ncm
+    strategy:
+      matrix:
+        include:
+          # Linux AMD64 (native on ubuntu-latest)
+          - os: ubuntu-latest
+            suffix: linux-amd64
+          # macOS ARM64 (native on macos-latest which is ARM64)
+          - os: macos-latest
+            suffix: darwin-arm64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+    
+    - name: Install libusb (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libusb-1.0-0-dev
+    
+    - name: Install libusb (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install libusb
+    
+    - name: Build go-ncm
+      env:
+        CGO_ENABLED: 1
+      run: |
+        echo "Building go-ncm for ${{ matrix.suffix }}..."
+        cd ncm
+        go build -ldflags="-s -w" -o ../go-ncm-${{ matrix.suffix }} ../cmd/cdc-ncm/main.go
+        cd ..
+        echo "Build complete!"
+        ls -la go-ncm-${{ matrix.suffix }}
+    
+    - name: Upload go-ncm artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: go-ncm-${{ matrix.suffix }}
+        path: go-ncm-${{ matrix.suffix }}

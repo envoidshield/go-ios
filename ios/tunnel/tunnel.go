@@ -16,6 +16,7 @@ import (
 	"math/big"
 	"os/exec"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/danielpaulus/go-ios/ios"
@@ -44,6 +45,40 @@ type Tunnel struct {
 // Close closes the connection to the device and removes the virtual network interface from the host
 func (t Tunnel) Close() error {
 	return t.closer()
+}
+
+// ManualPairAndConnectToTunnel tries to verify an existing pairing, and if this fails it triggers a new manual pairing process.
+// After a successful pairing a tunnel for this device gets started and the tunnel information is returned
+func PairAndGetHostKey(addr string, device ios.DeviceEntry, p PairRecordManager) (string, error) {
+	log.Info("PairAndGetHostKey: Starting manual pairing and tunnel connection.")
+	log.Info("IMPORTANT: Stop remoted first with 'sudo pkill -SIGSTOP remoted' and run this program with sudo.")
+
+	port := device.Rsd.GetPort("com.apple.internal.dt.coredevice.untrusted.tunnelservice")
+	log.Debugf("PairAndGetHostKey: Got untrusted tunnel service port: %d", port)
+
+	conn, err := ios.ConnectTUNDevice(addr, port, device)
+	if err != nil {
+		return "", fmt.Errorf("PairAndGetHostKey: failed to connect to TUN device: %w", err)
+	}
+
+	h, err := http.NewHttpConnection(conn)
+	if err != nil {
+		return "", fmt.Errorf("PairAndGetHostKey: failed to create HTTP2 connection: %w", err)
+	}
+
+	xpcConn, err := ios.CreateXpcConnection(h)
+	if err != nil {
+		return "", fmt.Errorf("PairAndGetHostKey: failed to create RemoteXPC connection: %w", err)
+	}
+
+	ts := newTunnelServiceWithXpc(xpcConn, h, p)
+
+	key, err := ts.ManualPairGetHostKey()
+	if err != nil {
+		return "", fmt.Errorf("PairAndGetHostKey: failed to pair device and retrieve host key: %w", err)
+	}
+
+	return key, nil
 }
 
 func ManualPairAndConnectToTunnel2(ctx context.Context, device ios.DeviceEntry, p PairRecordManager, addr string) (Tunnel, error) {
@@ -334,28 +369,44 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, erro
 
 	const prefixLength = 64 // TODO: this could be calculated from the netmask provided by the device
 
-	setIpAddr := exec.Command("ifconfig", ifce.Name(), "inet6", "add", fmt.Sprintf("%s/%d", tunnelInfo.ClientParameters.Address, prefixLength))
-	err = runCmd(setIpAddr)
-	if err != nil {
-		return nil, fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
-	}
-
-	// FIXME: we need to reduce the tunnel interface MTU so that the OS takes care of splitting the payloads into
-	// smaller packets. If we use a larger number here, the QUIC tunnel won't send the packets properly
-	// This is only necessary on MacOS, on Linux we can't set the MTU to a value less than 1280 (minimum for IPv6)
-	if runtime.GOOS == "darwin" {
-		ifceMtu := 1202
-		setMtu := exec.Command("ifconfig", ifce.Name(), "mtu", fmt.Sprintf("%d", ifceMtu), "up")
-		err = runCmd(setMtu)
+	// Use 'ip' command for Linux, 'ifconfig' for macOS
+	if runtime.GOOS == "linux" {
+		setIpAddr := exec.Command("ip", "-6", "addr", "add", fmt.Sprintf("%s/%d", tunnelInfo.ClientParameters.Address, prefixLength), "dev", ifce.Name())
+		err = runCmd(setIpAddr)
 		if err != nil {
-			return nil, fmt.Errorf("setupTunnelInterface: failed to configure MTU: %w", err)
+			return nil, fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
 		}
-	}
 
-	enableIfce := exec.Command("ifconfig", ifce.Name(), "up")
-	err = runCmd(enableIfce)
-	if err != nil {
-		return nil, fmt.Errorf("setupTunnelInterface: failed to enable interface %s: %w", ifce.Name(), err)
+		enableIfce := exec.Command("ip", "link", "set", ifce.Name(), "up")
+		err = runCmd(enableIfce)
+		if err != nil {
+			return nil, fmt.Errorf("setupTunnelInterface: failed to enable interface %s: %w", ifce.Name(), err)
+		}
+	} else {
+		// macOS uses ifconfig
+		setIpAddr := exec.Command("ifconfig", ifce.Name(), "inet6", "add", fmt.Sprintf("%s/%d", tunnelInfo.ClientParameters.Address, prefixLength))
+		err = runCmd(setIpAddr)
+		if err != nil {
+			return nil, fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
+		}
+
+		// FIXME: we need to reduce the tunnel interface MTU so that the OS takes care of splitting the payloads into
+		// smaller packets. If we use a larger number here, the QUIC tunnel won't send the packets properly
+		// This is only necessary on MacOS, on Linux we can't set the MTU to a value less than 1280 (minimum for IPv6)
+		if runtime.GOOS == "darwin" {
+			ifceMtu := 1202
+			setMtu := exec.Command("ifconfig", ifce.Name(), "mtu", fmt.Sprintf("%d", ifceMtu), "up")
+			err = runCmd(setMtu)
+			if err != nil {
+				return nil, fmt.Errorf("setupTunnelInterface: failed to configure MTU: %w", err)
+			}
+		}
+
+		enableIfce := exec.Command("ifconfig", ifce.Name(), "up")
+		err = runCmd(enableIfce)
+		if err != nil {
+			return nil, fmt.Errorf("setupTunnelInterface: failed to enable interface %s: %w", ifce.Name(), err)
+		}
 	}
 
 	return ifce, nil
@@ -364,6 +415,14 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, erro
 func runCmd(cmd *exec.Cmd) error {
 	buf := new(bytes.Buffer)
 	cmd.Stderr = buf
+
+	// Hide console window on Windows
+	if runtime.GOOS == "windows" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+		// Set Windows-specific attributes conditionally at runtime
+		// to avoid compilation errors on non-Windows platforms
+	}
+
 	err := cmd.Run()
 	if err != nil {
 		return fmt.Errorf("runCmd: failed to exeute command (stderr: %s): %w", buf.String(), err)
