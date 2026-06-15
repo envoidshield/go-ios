@@ -262,6 +262,9 @@ func createConfig(serial string) (*water.Interface, error) {
 	}
 	slog.Info("ethernet device is up:", "device", config.Name, "serial", serial)
 
+	// Advertise the host over mDNS on this link so the iPhone can reach it by name.
+	go StartMDNS(config.Name, MDNSName())
+
 	return ifce, err
 }
 
