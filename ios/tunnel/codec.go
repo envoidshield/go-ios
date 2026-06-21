@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"crypto/cipher"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -37,8 +38,15 @@ func (p *pairingData) Decode(e map[string]interface{}) error {
 	if err != nil {
 		return err
 	}
-	if data, ok := pd["data"].([]byte); ok {
+	switch data := pd["data"].(type) {
+	case []byte:
 		p.data = data
+	case string:
+		if decoded, err := base64.StdEncoding.DecodeString(data); err == nil {
+			p.data = decoded
+		} else {
+			p.data = []byte(data)
+		}
 	}
 	if kind, ok := pd["kind"].(string); ok {
 		p.kind = kind
@@ -149,8 +157,6 @@ func (c *controlChannelReadWriter) writeRequest(req map[string]interface{}) erro
 }
 
 func (c *controlChannelReadWriter) write(message map[string]interface{}) error {
-	fmt.Printf("write - Sending message: %+v\n", message) // Debug log before building envelope
-
 	e := map[string]interface{}{
 		"mangledTypeName": "RemotePairing.ControlChannelMessageEnvelope",
 		"value": map[string]interface{}{
@@ -160,15 +166,11 @@ func (c *controlChannelReadWriter) write(message map[string]interface{}) error {
 		},
 	}
 
-	fmt.Printf("write - Envelope built: %+v\n", e) // Debug log of the complete envelope
-
 	c.seqNr += 1
 	err := c.conn.Send(e)
 	if err != nil {
 		return fmt.Errorf("write: failed to send message: %w", err)
 	}
-
-	fmt.Printf("write - Message sent successfully\n") // Debug log after successful send
 
 	return nil
 }
@@ -179,21 +181,15 @@ func (c *controlChannelReadWriter) read() (map[string]interface{}, error) {
 		return nil, err
 	}
 
-	fmt.Printf("read - Received message: %+v\n", p) // Debug log of the raw received message
-
 	value, err := getChildMap(p, "value")
 	if err != nil {
 		return nil, err
 	}
 
-	fmt.Printf("read - 'value' map: %+v\n", value) // Debug log of the 'value' map
-
 	message, err := getChildMap(value, "message")
 	if err != nil {
 		return nil, err
 	}
-
-	fmt.Printf("read - 'message' map: %+v\n", message) // Debug log of the 'message' map
 
 	return message, nil
 }
@@ -242,7 +238,18 @@ func (c *cipherStream) read(p *map[string]interface{}) error {
 		return err
 	}
 	if streamEncr, err := getChildMap(m, "streamEncrypted"); err == nil {
-		if cip, ok := streamEncr["_0"].([]byte); ok {
+		var cip []byte
+		switch raw := streamEncr["_0"].(type) {
+		case []byte:
+			cip = raw
+		case string:
+			var err error
+			cip, err = base64.StdEncoding.DecodeString(raw)
+			if err != nil {
+				return err
+			}
+		}
+		if cip != nil {
 			plain, err := c.serverCipher.Open(nil, c.nonce, cip, nil)
 			if err != nil {
 				return err

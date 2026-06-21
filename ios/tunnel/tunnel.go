@@ -22,6 +22,7 @@ import (
 
 	"github.com/danielpaulus/go-ios/ios"
 	"github.com/danielpaulus/go-ios/ios/http"
+	"github.com/danielpaulus/go-ios/ios/tunnel/tlspsk"
 
 	"github.com/quic-go/quic-go"
 	"github.com/sirupsen/logrus"
@@ -118,17 +119,8 @@ func dialRemotePairingService(addr string, port int, p PairRecordManager) (*tunn
 	}
 	conn := nc.(*net.TCPConn)
 	_ = conn.SetNoDelay(true)
-	h, err := http.NewHttpConnection(conn)
-	if err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("dialRemotePairingService: http2: %w", err)
-	}
-	xpcConn, err := ios.CreateXpcConnection(h)
-	if err != nil {
-		_ = h.Close()
-		return nil, fmt.Errorf("dialRemotePairingService: xpc: %w", err)
-	}
-	return newTunnelServiceWithXpc(xpcConn, h, p), nil
+	rp := newRPPairingConn(conn)
+	return newTunnelServiceWithRPPairing(rp, conn, p), nil
 }
 
 // ProbeNetworkDevice connects to addr:servicePort, pair-verifies with the host
@@ -142,15 +134,11 @@ func ProbeNetworkDevice(addr string, servicePort int, p PairRecordManager) (stri
 	if err := ts.verifyExistingPairing(); err != nil {
 		return "", fmt.Errorf("ProbeNetworkDevice: %w", err)
 	}
-	udid := ts.DeviceUDID()
-	if udid == "" {
-		return "", fmt.Errorf("ProbeNetworkDevice: handshake missing udid")
-	}
-	return udid, nil
+	return ts.DeviceUDID(), nil
 }
 
 // ConnectNetworkTunnel pair-verifies over the network RemotePairing service and
-// brings up a CoreDevice tunnel (QUIC) to the device at addr.
+// brings up a CoreDevice tunnel (TLS-PSK TCP) to the device at addr.
 func ConnectNetworkTunnel(ctx context.Context, addr string, servicePort int, p PairRecordManager) (Tunnel, error) {
 	ts, err := dialRemotePairingService(addr, servicePort, p)
 	if err != nil {
@@ -162,23 +150,31 @@ func ConnectNetworkTunnel(ctx context.Context, addr string, servicePort int, p P
 		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: pair verify: %w", err)
 	}
 	udid := ts.DeviceUDID()
-	if udid == "" {
-		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: handshake missing udid")
-	}
 
-	tunnelInfo, err := ts.createTunnelListener()
+	tunnelPort, err := ts.createTcpTunnelListener()
 	if err != nil {
 		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: create listener: %w", err)
+	}
+
+	tcpConn, err := net.Dial("tcp4", fmt.Sprintf("%s:%d", addr, tunnelPort))
+	if err != nil {
+		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: dial tunnel: %w", err)
+	}
+	tlsConn, err := tlspsk.Client(tcpConn, ts.sharedSecret)
+	if err != nil {
+		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: TLS-PSK: %w", err)
 	}
 
 	device := ios.DeviceEntry{
 		Properties: ios.DeviceProperties{SerialNumber: udid},
 	}
-	t, err := connectToTunnel(ctx, tunnelInfo, addr, device)
+	t, err := connectToTunnelLockdown(ctx, device, tlsConn)
 	if err != nil {
 		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: connect: %w", err)
 	}
-	t.Udid = udid
+	if udid != "" {
+		t.Udid = udid
+	}
 	return t, nil
 }
 

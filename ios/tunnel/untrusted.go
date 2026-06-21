@@ -34,6 +34,15 @@ func newTunnelServiceWithXpc(xpcConn *xpc.Connection, c io.Closer, pairRecords P
 	}
 }
 
+func newTunnelServiceWithRPPairing(conn xpcConn, c io.Closer, pairRecords PairRecordManager) *tunnelService {
+	return &tunnelService{
+		c:              c,
+		controlChannel: newControlChannelReadWriter(conn),
+		pairRecords:    pairRecords,
+		jsonWire:       true,
+	}
+}
+
 type tunnelService struct {
 	xpcConn *xpc.Connection
 	c       io.Closer
@@ -42,7 +51,10 @@ type tunnelService struct {
 	cipher         *cipherStream
 
 	pairRecords PairRecordManager
-	deviceUDID   string
+	deviceUDID  string
+	jsonWire    bool
+	// sharedSecret is the raw X25519 ECDH secret from pair-verify; TLS-PSK key for TCP tunnels.
+	sharedSecret []byte
 }
 
 func (t *tunnelService) Close() error {
@@ -319,6 +331,39 @@ func (t *tunnelService) createTunnelListener() (tunnelListener, error) {
 	}, nil
 }
 
+func (t *tunnelService) createTcpTunnelListener() (uint16, error) {
+	log.Info("create tcp tunnel listener")
+	if len(t.sharedSecret) == 0 {
+		return 0, fmt.Errorf("createTcpTunnelListener: no pair-verify shared secret")
+	}
+	err := t.cipher.write(map[string]interface{}{
+		"request": map[string]interface{}{
+			"_0": map[string]interface{}{
+				"createListener": map[string]interface{}{
+					"key":                   t.sharedSecret,
+					"transportProtocolType": "tcp",
+				},
+			},
+		},
+	})
+	if err != nil {
+		return 0, err
+	}
+	var listenerRes map[string]interface{}
+	if err = t.cipher.read(&listenerRes); err != nil {
+		return 0, err
+	}
+	createListener, err := getChildMap(listenerRes, "response", "_1", "createListener")
+	if err != nil {
+		return 0, err
+	}
+	port, ok := createListener["port"].(float64)
+	if !ok {
+		return 0, fmt.Errorf("createTcpTunnelListener: no port in response")
+	}
+	return uint16(port), nil
+}
+
 func (t *tunnelService) setupCiphers(sessionKey []byte) error {
 	fmt.Println("[DEBUG] setupCiphers: initializing cipher setup")
 
@@ -574,9 +619,13 @@ func (t *tunnelService) verifyPair() error {
 	tlvEncrypted := newTlvBuffer()
 	tlvEncrypted.writeByte(typeState, pairStateVerifyRequest)
 	tlvEncrypted.writeData(typeEncryptedData, encrypted)
+	verifyKind := "verifyPairing"
+	if t.jsonWire {
+		verifyKind = "verifyManualPairing"
+	}
 	eventEncrypted := pairingData{
 		data:            tlvEncrypted.bytes(),
-		kind:            "verifyPairing",
+		kind:            verifyKind,
 		startNewSession: false,
 	}
 
@@ -595,18 +644,32 @@ func (t *tunnelService) verifyPair() error {
 		return err
 	}
 
-	errRes, err := tlvReader(responseP.data).readCoalesced(typeError)
+	respTLV := tlvReader(responseP.data)
+	if state, _ := respTLV.readCoalesced(typeState); len(state) > 0 && state[0] == pairStateVerifyResponse {
+		log.Debug("Verify Pair successful")
+		return t.finishVerifySuccess(sharedSecret)
+	}
+
+	errRes, err := respTLV.readCoalesced(typeError)
 
 	log.Printf("Reading error from response, err: %v, errRes: %v", err, errRes)
 	if err != nil {
 		log.Printf("Error reading error from response: %v", err)
 		return err
 	}
-	if errRes != nil {
+	if errRes != nil && len(errRes) > 0 {
 		log.Printf("Received error from response: %v", errRes)
 		return fmt.Errorf("received error from response: %v", errRes)
 	}
 	log.Debug("Verify Pair successful")
+	return t.finishVerifySuccess(sharedSecret)
+}
+
+func (t *tunnelService) finishVerifySuccess(sharedSecret []byte) error {
+	t.sharedSecret = sharedSecret
+	if err := t.setupCiphers(sharedSecret); err != nil {
+		return fmt.Errorf("verifyPair: setup ciphers: %w", err)
+	}
 	return nil
 }
 
