@@ -157,6 +157,67 @@ func (t *tunnelService) ManualPairGetHostKey() (string, error) {
 	return unlockKey, nil
 }
 
+// verifyExistingPairing performs only the handshake + pair-verify step. It
+// returns nil when an existing pairing is valid (no on-device prompt), and an
+// error when this host is not yet trusted - in which case the device RSTs the
+// control channel and a fresh connection is required for manual setup.
+func (t *tunnelService) verifyExistingPairing() error {
+	err := t.controlChannel.writeRequest(map[string]interface{}{
+		"handshake": map[string]interface{}{
+			"_0": map[string]interface{}{
+				"hostOptions": map[string]interface{}{
+					"attemptPairVerify": true,
+				},
+				"wireProtocolVersion": int64(19),
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("verifyExistingPairing: failed to send handshake: %w", err)
+	}
+	if _, err = t.controlChannel.read(); err != nil {
+		return fmt.Errorf("verifyExistingPairing: failed to read handshake response: %w", err)
+	}
+	return t.verifyPair()
+}
+
+// setupNewPairingGetHostKey runs full manual pairing on a fresh control channel
+// and returns the remote unlock host key. It triggers the on-device Trust
+// prompt. The handshake declares attemptPairVerify=false so the device goes
+// straight to setup instead of expecting (and rejecting) a verify exchange.
+func (t *tunnelService) setupNewPairingGetHostKey() (string, error) {
+	err := t.controlChannel.writeRequest(map[string]interface{}{
+		"handshake": map[string]interface{}{
+			"_0": map[string]interface{}{
+				"hostOptions": map[string]interface{}{
+					"attemptPairVerify": false,
+				},
+				"wireProtocolVersion": int64(19),
+			},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("setupNewPairing: failed to send handshake: %w", err)
+	}
+	if _, err = t.controlChannel.read(); err != nil {
+		return "", fmt.Errorf("setupNewPairing: failed to read handshake response: %w", err)
+	}
+	if err = t.setupManualPairing(); err != nil {
+		return "", fmt.Errorf("setupNewPairing: failed to initiate manual pairing: %w", err)
+	}
+	sessionKey, err := t.setupSessionKey()
+	if err != nil {
+		return "", fmt.Errorf("setupNewPairing: failed to setup SRP session key: %w", err)
+	}
+	if err = t.exchangeDeviceInfo(sessionKey); err != nil {
+		return "", fmt.Errorf("setupNewPairing: failed to exchange device info: %w", err)
+	}
+	if err = t.setupCiphers(sessionKey); err != nil {
+		return "", fmt.Errorf("setupNewPairing: failed to setup session ciphers: %w", err)
+	}
+	return t.createUnlockKeyAsString()
+}
+
 func (t *tunnelService) createTunnelListener() (tunnelListener, error) {
 	log.Info("create tunnel listener")
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)

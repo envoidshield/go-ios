@@ -56,29 +56,51 @@ func PairAndGetHostKey(addr string, device ios.DeviceEntry, p PairRecordManager)
 	port := device.Rsd.GetPort("com.apple.internal.dt.coredevice.untrusted.tunnelservice")
 	log.Debugf("PairAndGetHostKey: Got untrusted tunnel service port: %d", port)
 
-	conn, err := ios.ConnectTUNDevice(addr, port, device)
+	// Connection 1: try to verify an existing pairing. If this host is already
+	// trusted the device returns silently with no on-device prompt.
+	ts, err := dialTunnelService(addr, port, device, p)
 	if err != nil {
-		return "", fmt.Errorf("PairAndGetHostKey: failed to connect to TUN device: %w", err)
+		return "", err
 	}
+	verifyErr := ts.verifyExistingPairing()
+	_ = ts.Close()
+	if verifyErr == nil {
+		log.Info("PairAndGetHostKey: existing pairing verified")
+		return "", nil
+	}
+	log.WithError(verifyErr).Info("PairAndGetHostKey: pair verify failed, starting fresh manual pairing")
 
-	h, err := http.NewHttpConnection(conn)
+	// A failed verify makes the device RST the control channel, so manual setup
+	// (which triggers the on-device Trust prompt) must run on a fresh connection.
+	ts2, err := dialTunnelService(addr, port, device, p)
 	if err != nil {
-		return "", fmt.Errorf("PairAndGetHostKey: failed to create HTTP2 connection: %w", err)
+		return "", err
 	}
-
-	xpcConn, err := ios.CreateXpcConnection(h)
-	if err != nil {
-		return "", fmt.Errorf("PairAndGetHostKey: failed to create RemoteXPC connection: %w", err)
-	}
-
-	ts := newTunnelServiceWithXpc(xpcConn, h, p)
-
-	key, err := ts.ManualPairGetHostKey()
+	defer ts2.Close()
+	key, err := ts2.setupNewPairingGetHostKey()
 	if err != nil {
 		return "", fmt.Errorf("PairAndGetHostKey: failed to pair device and retrieve host key: %w", err)
 	}
-
 	return key, nil
+}
+
+// dialTunnelService opens a fresh RemoteXPC control channel to the device's
+// untrusted tunnel service. Each pairing attempt needs its own channel because
+// the device tears the channel down on a failed pair-verify.
+func dialTunnelService(addr string, port int, device ios.DeviceEntry, p PairRecordManager) (*tunnelService, error) {
+	conn, err := ios.ConnectTUNDevice(addr, port, device)
+	if err != nil {
+		return nil, fmt.Errorf("dialTunnelService: failed to connect to TUN device: %w", err)
+	}
+	h, err := http.NewHttpConnection(conn)
+	if err != nil {
+		return nil, fmt.Errorf("dialTunnelService: failed to create HTTP2 connection: %w", err)
+	}
+	xpcConn, err := ios.CreateXpcConnection(h)
+	if err != nil {
+		return nil, fmt.Errorf("dialTunnelService: failed to create RemoteXPC connection: %w", err)
+	}
+	return newTunnelServiceWithXpc(xpcConn, h, p), nil
 }
 
 func ManualPairAndConnectToTunnel2(ctx context.Context, device ios.DeviceEntry, p PairRecordManager, addr string) (Tunnel, error) {
