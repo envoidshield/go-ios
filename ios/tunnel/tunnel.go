@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"os/exec"
 	"runtime"
 	"syscall"
@@ -101,6 +102,84 @@ func dialTunnelService(addr string, port int, device ios.DeviceEntry, p PairReco
 		return nil, fmt.Errorf("dialTunnelService: failed to create RemoteXPC connection: %w", err)
 	}
 	return newTunnelServiceWithXpc(xpcConn, h, p), nil
+}
+
+// dialRemotePairingService opens RemoteXPC over TCP to the device's network
+// RemotePairing port (typically 49152 from mDNS _remotepairing._tcp).
+func dialRemotePairingService(addr string, port int, p PairRecordManager) (*tunnelService, error) {
+	tcpAddr, err := net.ResolveTCPAddr("tcp4", fmt.Sprintf("%s:%d", addr, port))
+	if err != nil {
+		return nil, fmt.Errorf("dialRemotePairingService: resolve: %w", err)
+	}
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: time.Second}
+	nc, err := dialer.Dial("tcp4", tcpAddr.String())
+	if err != nil {
+		return nil, fmt.Errorf("dialRemotePairingService: dial: %w", err)
+	}
+	conn := nc.(*net.TCPConn)
+	_ = conn.SetNoDelay(true)
+	h, err := http.NewHttpConnection(conn)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("dialRemotePairingService: http2: %w", err)
+	}
+	xpcConn, err := ios.CreateXpcConnection(h)
+	if err != nil {
+		_ = h.Close()
+		return nil, fmt.Errorf("dialRemotePairingService: xpc: %w", err)
+	}
+	return newTunnelServiceWithXpc(xpcConn, h, p), nil
+}
+
+// ProbeNetworkDevice connects to addr:servicePort, pair-verifies with the host
+// identity, and returns the device UDID from the RemotePairing handshake.
+func ProbeNetworkDevice(addr string, servicePort int, p PairRecordManager) (string, error) {
+	ts, err := dialRemotePairingService(addr, servicePort, p)
+	if err != nil {
+		return "", err
+	}
+	defer ts.Close()
+	if err := ts.verifyExistingPairing(); err != nil {
+		return "", fmt.Errorf("ProbeNetworkDevice: %w", err)
+	}
+	udid := ts.DeviceUDID()
+	if udid == "" {
+		return "", fmt.Errorf("ProbeNetworkDevice: handshake missing udid")
+	}
+	return udid, nil
+}
+
+// ConnectNetworkTunnel pair-verifies over the network RemotePairing service and
+// brings up a CoreDevice tunnel (QUIC) to the device at addr.
+func ConnectNetworkTunnel(ctx context.Context, addr string, servicePort int, p PairRecordManager) (Tunnel, error) {
+	ts, err := dialRemotePairingService(addr, servicePort, p)
+	if err != nil {
+		return Tunnel{}, err
+	}
+	defer ts.Close()
+
+	if err := ts.verifyExistingPairing(); err != nil {
+		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: pair verify: %w", err)
+	}
+	udid := ts.DeviceUDID()
+	if udid == "" {
+		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: handshake missing udid")
+	}
+
+	tunnelInfo, err := ts.createTunnelListener()
+	if err != nil {
+		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: create listener: %w", err)
+	}
+
+	device := ios.DeviceEntry{
+		Properties: ios.DeviceProperties{SerialNumber: udid},
+	}
+	t, err := connectToTunnel(ctx, tunnelInfo, addr, device)
+	if err != nil {
+		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: connect: %w", err)
+	}
+	t.Udid = udid
+	return t, nil
 }
 
 func ManualPairAndConnectToTunnel2(ctx context.Context, device ios.DeviceEntry, p PairRecordManager, addr string) (Tunnel, error) {

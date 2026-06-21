@@ -42,10 +42,41 @@ type tunnelService struct {
 	cipher         *cipherStream
 
 	pairRecords PairRecordManager
+	deviceUDID   string
 }
 
 func (t *tunnelService) Close() error {
 	return t.c.Close()
+}
+
+func (t *tunnelService) DeviceUDID() string {
+	return t.deviceUDID
+}
+
+// readHandshakeResponse reads the device handshake reply and stores peer UDID.
+func (t *tunnelService) readHandshakeResponse() error {
+	resp, err := t.controlChannel.read()
+	if err != nil {
+		return fmt.Errorf("readHandshakeResponse: %w", err)
+	}
+	if udid := parseHandshakeUDID(resp); udid != "" {
+		t.deviceUDID = udid
+	}
+	return nil
+}
+
+func parseHandshakeUDID(message map[string]interface{}) string {
+	handshake, err := getChildMap(message, "plain", "_0", "response", "_1", "handshake", "_0", "deviceOptions", "peerDeviceInfo")
+	if err != nil {
+		return ""
+	}
+	udid, _ := handshake["udid"].(string)
+	if udid == "" {
+		if id, ok := handshake["identifier"].(string); ok {
+			udid = id
+		}
+	}
+	return udid
 }
 
 type RemotePairResult struct {
@@ -175,7 +206,7 @@ func (t *tunnelService) verifyExistingPairing() error {
 	if err != nil {
 		return fmt.Errorf("verifyExistingPairing: failed to send handshake: %w", err)
 	}
-	if _, err = t.controlChannel.read(); err != nil {
+	if err = t.readHandshakeResponse(); err != nil {
 		return fmt.Errorf("verifyExistingPairing: failed to read handshake response: %w", err)
 	}
 	return t.verifyPair()
