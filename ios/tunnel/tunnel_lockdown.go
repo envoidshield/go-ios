@@ -96,39 +96,33 @@ func forwardTUNToDevice(ctx context.Context, mtu uint64, tun io.Reader, deviceCo
 }
 
 func forwardTCPToInterface(ctx context.Context, mtu uint64, deviceConn io.Reader, tun io.Writer) error {
-	payload := make([]byte, maxTunnelPacket)
-	ip6Header := make([]byte, 40)
+	// One contiguous buffer per packet. A TUN requires exactly one complete IP
+	// packet per Write() syscall; a bufio.Writer would split any packet larger
+	// than its buffer across multiple writes, producing malformed fragments the
+	// kernel silently drops (breaks device->host forwarding for big frames).
+	pkt := make([]byte, maxTunnelPacket)
+	header := pkt[:40]
 
 	br := bufio.NewReader(deviceConn)
-	bw := bufio.NewWriter(tun)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		default:
-			_, err := io.ReadFull(br, ip6Header)
-			if err != nil {
+			if _, err := io.ReadFull(br, header); err != nil {
 				return fmt.Errorf("failed to read IPv6 header: %w", err)
 			}
-
-			if ip6Header[0] != 0x60 {
-				return fmt.Errorf("not an IPv6 packet. expected 0x60, but got 0x%02x", ip6Header[0])
+			if header[0]>>4 != 6 {
+				return fmt.Errorf("not an IPv6 packet. expected version 6, but got 0x%02x", header[0])
 			}
-			payloadLength := binary.BigEndian.Uint16(ip6Header[4:6])
-			_, err = io.ReadFull(br, payload[:payloadLength])
-			if err != nil {
+			payloadLength := int(binary.BigEndian.Uint16(header[4:6]))
+			if _, err := io.ReadFull(br, pkt[40:40+payloadLength]); err != nil {
 				return fmt.Errorf("failed to read payload of length %d: %w", payloadLength, err)
 			}
-
-			// we don't need to check all errors here as `Flush` will return the error from a previous write as well
-			_, _ = bw.Write(ip6Header)
-			_, _ = bw.Write(payload[:payloadLength])
-			err = bw.Flush()
-			if err != nil {
-				return fmt.Errorf("could not flush packet: %w", err)
+			if _, err := tun.Write(pkt[:40+payloadLength]); err != nil {
+				return fmt.Errorf("could not write packet to interface: %w", err)
 			}
 		}
-
 	}
 }
