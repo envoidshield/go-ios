@@ -8,6 +8,7 @@ import (
 	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 
 	"io"
@@ -351,10 +352,16 @@ func (t *tunnelService) createTcpTunnelListener() (uint16, error) {
 	}
 	var listenerRes map[string]interface{}
 	if err = t.cipher.read(&listenerRes); err != nil {
+		log.WithError(err).Error("createTcpTunnelListener: read response failed")
 		return 0, err
 	}
 	createListener, err := getChildMap(listenerRes, "response", "_1", "createListener")
 	if err != nil {
+		if raw, jerr := json.Marshal(listenerRes); jerr == nil {
+			log.WithField("response", string(raw)).Error("createTcpTunnelListener: device rejected createListener")
+		} else {
+			log.WithField("response", fmt.Sprintf("%v", listenerRes)).Error("createTcpTunnelListener: device rejected createListener")
+		}
 		return 0, err
 	}
 	port, ok := createListener["port"].(float64)
