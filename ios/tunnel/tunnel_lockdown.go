@@ -14,6 +14,12 @@ import (
 
 const coreDeviceProxy = "com.apple.internal.devicecompute.CoreDeviceProxy"
 
+// maxTunnelPacket bounds the forwarding buffers. The IPv6 payload length is a
+// 16-bit field, so 0xffff + the 40-byte header covers any non-jumbo frame the
+// device can send, regardless of the negotiated MTU. Sizing to the MTU instead
+// risks a slice overflow when the device emits a larger frame.
+const maxTunnelPacket = 0xffff + 40
+
 func ConnectTunnelLockdown(device ios.DeviceEntry) (Tunnel, error) {
 	conn, err := ios.ConnectToService(device, coreDeviceProxy)
 	if err != nil {
@@ -66,7 +72,7 @@ func connectToTunnelLockdown(ctx context.Context, device ios.DeviceEntry, connTo
 }
 
 func forwardTUNToDevice(ctx context.Context, mtu uint64, tun io.Reader, deviceConn io.Writer) error {
-	packet := make([]byte, mtu)
+	packet := make([]byte, maxTunnelPacket)
 	for {
 
 		select {
@@ -90,7 +96,7 @@ func forwardTUNToDevice(ctx context.Context, mtu uint64, tun io.Reader, deviceCo
 }
 
 func forwardTCPToInterface(ctx context.Context, mtu uint64, deviceConn io.Reader, tun io.Writer) error {
-	payload := make([]byte, mtu)
+	payload := make([]byte, maxTunnelPacket)
 	ip6Header := make([]byte, 40)
 
 	br := bufio.NewReader(deviceConn)

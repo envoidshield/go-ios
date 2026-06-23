@@ -476,6 +476,19 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, erro
 		if err != nil {
 			return nil, fmt.Errorf("setupTunnelInterface: failed to enable interface %s: %w", ifce.Name(), err)
 		}
+
+		// Match the interface MTU to the device-negotiated tunnel MTU. Without
+		// this the utun keeps water's 1500 default while the device sends larger
+		// CoreDevice frames, stalling device->host forwarding. Clamp to the IPv6
+		// minimum (1280).
+		mtu := tunnelInfo.ClientParameters.Mtu
+		if mtu < 1280 {
+			mtu = 1280
+		}
+		setMtu := exec.Command("ip", "link", "set", ifce.Name(), "mtu", fmt.Sprintf("%d", mtu))
+		if err = runCmd(setMtu); err != nil {
+			return nil, fmt.Errorf("setupTunnelInterface: failed to configure MTU: %w", err)
+		}
 	} else {
 		// macOS uses ifconfig
 		setIpAddr := exec.Command("ifconfig", ifce.Name(), "inet6", "add", fmt.Sprintf("%s/%d", tunnelInfo.ClientParameters.Address, prefixLength))
