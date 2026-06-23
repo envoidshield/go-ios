@@ -189,7 +189,7 @@ func ConnectUserSpaceTunnelLockdown(device ios.DeviceEntry, ifacePort int) (Tunn
 
 func connectToUserspaceTunnelLockdown(ctx context.Context, device ios.DeviceEntry, connToDevice io.ReadWriteCloser, ifacePort int) (Tunnel, error) {
 	slog.Info("connect to lockdown tunnel endpoint on device")
-	tunnelInfo, err := exchangeCoreTunnelParameters(connToDevice)
+	tunnelInfo, err := exchangeCoreTunnelParametersWithContext(ctx, connToDevice)
 	if err != nil {
 		return Tunnel{}, fmt.Errorf("could not exchange tunnel parameters. %w", err)
 	}

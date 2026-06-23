@@ -3,6 +3,7 @@ package ios
 import (
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"strings"
@@ -81,11 +82,13 @@ func (conn *DeviceConnectionRWC) Reader() io.Reader {
 // Send implements DeviceConnectionInterface.
 func (conn *DeviceConnectionRWC) Send(message []byte) error {
 	n, err := conn.c.Write(message)
-	if n < len(message) {
+	if n < len(message) && !isExpectedConnectionCloseErr(err) {
 		log.Errorf("DeviceConnection failed writing %d bytes, only %d sent", len(message), n)
 	}
 	if err != nil {
-		log.Errorf("Failed sending: %s", err)
+		if !isExpectedConnectionCloseErr(err) {
+			log.Errorf("Failed sending: %s", err)
+		}
 		conn.Close()
 		return err
 	}
@@ -155,15 +158,29 @@ func (conn *DeviceConnection) Close() error {
 // Send sends a message
 func (conn *DeviceConnection) Send(bytes []byte) error {
 	n, err := conn.c.Write(bytes)
-	if n < len(bytes) {
+	if n < len(bytes) && !isExpectedConnectionCloseErr(err) {
 		log.Errorf("DeviceConnection failed writing %d bytes, only %d sent", len(bytes), n)
 	}
 	if err != nil {
-		log.Errorf("Failed sending: %s", err)
+		if !isExpectedConnectionCloseErr(err) {
+			log.Errorf("Failed sending: %s", err)
+		}
 		conn.Close()
 		return err
 	}
 	return nil
+}
+
+func isExpectedConnectionCloseErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "file already closed")
 }
 
 // Reader exposes the underlying net.Conn as io.Reader

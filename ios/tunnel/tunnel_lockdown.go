@@ -25,7 +25,7 @@ func ConnectTunnelLockdown(device ios.DeviceEntry) (Tunnel, error) {
 func connectToTunnelLockdown(ctx context.Context, device ios.DeviceEntry, connToDevice io.ReadWriteCloser) (Tunnel, error) {
 	logrus.Info("connect to lockdown tunnel endpoint on device")
 
-	tunnelInfo, err := exchangeCoreTunnelParameters(connToDevice)
+	tunnelInfo, err := exchangeCoreTunnelParametersWithContext(ctx, connToDevice)
 	if err != nil {
 		return Tunnel{}, fmt.Errorf("could not exchange tunnel parameters. %w", err)
 	}
@@ -41,14 +41,14 @@ func connectToTunnelLockdown(ctx context.Context, device ios.DeviceEntry, connTo
 
 	go func() {
 		err := forwardTCPToInterface(tunnelCtx, tunnelInfo.ClientParameters.Mtu, connToDevice, utunIface)
-		if err != nil {
+		if err != nil && tunnelCtx.Err() == nil && !isExpectedTunnelCloseErr(err) {
 			logrus.WithError(err).Error("failed to forward data to tunnel interface")
 		}
 	}()
 
 	go func() {
 		err := forwardTUNToDevice(tunnelCtx, tunnelInfo.ClientParameters.Mtu, utunIface, connToDevice)
-		if err != nil {
+		if err != nil && tunnelCtx.Err() == nil && !isExpectedTunnelCloseErr(err) {
 			logrus.WithError(err).Error("failed to forward data to the device")
 		}
 	}()

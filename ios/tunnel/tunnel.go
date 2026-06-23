@@ -17,6 +17,7 @@ import (
 	"net"
 	"os/exec"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -52,11 +53,7 @@ func (t Tunnel) Close() error {
 // ManualPairAndConnectToTunnel tries to verify an existing pairing, and if this fails it triggers a new manual pairing process.
 // After a successful pairing a tunnel for this device gets started and the tunnel information is returned
 func PairAndGetHostKey(addr string, device ios.DeviceEntry, p PairRecordManager) (string, error) {
-	log.Info("PairAndGetHostKey: Starting manual pairing and tunnel connection.")
-	log.Info("IMPORTANT: Stop remoted first with 'sudo pkill -SIGSTOP remoted' and run this program with sudo.")
-
 	port := device.Rsd.GetPort("com.apple.internal.dt.coredevice.untrusted.tunnelservice")
-	log.Debugf("PairAndGetHostKey: Got untrusted tunnel service port: %d", port)
 
 	// Connection 1: try to verify an existing pairing. If this host is already
 	// trusted the device returns silently with no on-device prompt.
@@ -67,10 +64,9 @@ func PairAndGetHostKey(addr string, device ios.DeviceEntry, p PairRecordManager)
 	verifyErr := ts.verifyExistingPairing()
 	_ = ts.Close()
 	if verifyErr == nil {
-		log.Info("PairAndGetHostKey: existing pairing verified")
 		return "", nil
 	}
-	log.WithError(verifyErr).Info("PairAndGetHostKey: pair verify failed, starting fresh manual pairing")
+	log.WithError(verifyErr).Debug("PairAndGetHostKey: pair verify failed, starting fresh manual pairing")
 
 	// A failed verify makes the device RST the control channel, so manual setup
 	// (which triggers the on-device Trust prompt) must run on a fresh connection.
@@ -156,12 +152,15 @@ func ConnectNetworkTunnel(ctx context.Context, addr string, servicePort int, p P
 		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: create listener: %w", err)
 	}
 
-	tcpConn, err := net.Dial("tcp4", fmt.Sprintf("%s:%d", addr, tunnelPort))
+	dialer := net.Dialer{Timeout: 10 * time.Second, KeepAlive: time.Second}
+	nc, err := dialer.DialContext(ctx, "tcp4", fmt.Sprintf("%s:%d", addr, tunnelPort))
 	if err != nil {
 		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: dial tunnel: %w", err)
 	}
+	tcpConn := nc.(*net.TCPConn)
 	tlsConn, err := tlspsk.Client(tcpConn, ts.sharedSecret)
 	if err != nil {
+		_ = tcpConn.Close()
 		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: TLS-PSK: %w", err)
 	}
 
@@ -170,6 +169,7 @@ func ConnectNetworkTunnel(ctx context.Context, addr string, servicePort int, p P
 	}
 	t, err := connectToTunnelLockdown(ctx, device, tlsConn)
 	if err != nil {
+		_ = tlsConn.Close()
 		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: connect: %w", err)
 	}
 	if udid != "" {
@@ -347,9 +347,6 @@ func RemotePair(ctx context.Context, device ios.DeviceEntry, p PairRecordManager
 	publicKeyB64 := base64.StdEncoding.EncodeToString(ts.pairRecords.selfId.PublicKey)
 	privateKeyB64 := base64.StdEncoding.EncodeToString(ts.pairRecords.selfId.PrivateKey)
 
-	fmt.Printf("[DEBUG] PublicKey (base64): %s\n", publicKeyB64)
-	fmt.Printf("[DEBUG] PrivateKey (base64): %s\n", privateKeyB64)
-
 	hostKey, err := ts.ManualPairGetHostKey()
 	if err != nil {
 		return RemotePairResult{}, fmt.Errorf("Remote Pair: failed to pair device: %w", err)
@@ -426,14 +423,14 @@ func connectToTunnel(ctx context.Context, info tunnelListener, addr string, devi
 
 	go func() {
 		err := forwardDataToInterface(tunnelCtx, conn, utunIface)
-		if err != nil {
+		if err != nil && tunnelCtx.Err() == nil && !isExpectedTunnelCloseErr(err) {
 			logrus.WithError(err).Error("failed to forward data to tunnel interface")
 		}
 	}()
 
 	go func() {
 		err := forwardDataToDevice(tunnelCtx, tunnelInfo.ClientParameters.Mtu, utunIface, conn)
-		if err != nil {
+		if err != nil && tunnelCtx.Err() == nil && !isExpectedTunnelCloseErr(err) {
 			logrus.WithError(err).Error("failed to forward data to the device")
 		}
 	}()
@@ -601,6 +598,16 @@ func forwardDataToInterface(ctx context.Context, conn quic.Connection, w io.Writ
 	}
 }
 
+func isExpectedTunnelCloseErr(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "file already closed") ||
+		strings.Contains(msg, "application error 0x0")
+}
+
 func exchangeCoreTunnelParameters(stream io.ReadWriteCloser) (tunnelParameters, error) {
 	rq, err := json.Marshal(map[string]interface{}{
 		"type": "clientHandshakeRequest",
@@ -641,4 +648,25 @@ func exchangeCoreTunnelParameters(stream io.ReadWriteCloser) (tunnelParameters, 
 		return tunnelParameters{}, err
 	}
 	return parameters, nil
+}
+
+func exchangeCoreTunnelParametersWithContext(ctx context.Context, stream io.ReadWriteCloser) (tunnelParameters, error) {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = stream.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
+
+	parameters, err := exchangeCoreTunnelParameters(stream)
+	if ctx.Err() != nil {
+		if err != nil {
+			return tunnelParameters{}, fmt.Errorf("%w: %v", ctx.Err(), err)
+		}
+		return tunnelParameters{}, ctx.Err()
+	}
+	return parameters, err
 }

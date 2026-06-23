@@ -1,5 +1,7 @@
 package ios
 
+import "fmt"
+
 type SavePair struct {
 	BundleID            string
 	ClientVersionString string
@@ -48,6 +50,34 @@ func newSavePairRecordData(DeviceCertificate []byte,
 	result := savePairRecordData{DeviceCertificate, HostPrivateKey, HostCertificate, RootPrivateKey, RootCertificate, EscrowBag, WiFiMACAddress, HostID, SystemBUID}
 	bytes := []byte(ToPlist(result))
 	return bytes
+}
+
+// SavePairRecord persists a USB lockdown pair record with usbmuxd.
+func SavePairRecord(udid string, record PairRecord) error {
+	muxConn, err := NewUsbMuxConnectionSimple()
+	if err != nil {
+		return err
+	}
+	defer muxConn.Close()
+	ok, err := muxConn.savePair(
+		udid,
+		record.DeviceCertificate,
+		record.HostPrivateKey,
+		record.HostCertificate,
+		record.RootPrivateKey,
+		record.RootCertificate,
+		record.EscrowBag,
+		record.WiFiMACAddress,
+		record.HostID,
+		record.SystemBUID,
+	)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("usbmux SavePairRecord failed for %s", udid)
+	}
+	return nil
 }
 
 func (muxConn *UsbMuxConnection) savePair(udid string, DeviceCertificate []byte,
