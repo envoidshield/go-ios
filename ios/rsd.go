@@ -186,6 +186,37 @@ func NewWithAddrPortDevice(addr string, port int, d DeviceEntry) (RsdService, er
 	return newRsdServiceFromTcpConn(conn)
 }
 
+// NewWithAddrPortDeviceTimeout is NewWithAddrPortDevice with a hard bound on the
+// HTTP/2 + XPC setup. The TCP dial is already bounded by ConnectTUNDevice, but a
+// half-broken tunnel (dial succeeds, large frames don't forward) leaves the h2
+// preface/XPC read blocking forever. On timeout the conn is closed to abort the
+// in-flight read so the setup goroutine cannot leak.
+func NewWithAddrPortDeviceTimeout(addr string, port int, d DeviceEntry, timeout time.Duration) (RsdService, error) {
+	if timeout <= 0 {
+		return NewWithAddrPortDevice(addr, port, d)
+	}
+	conn, err := ConnectTUNDevice(addr, port, d)
+	if err != nil {
+		return RsdService{}, fmt.Errorf("NewWithAddrPortTUNDevice: failed to connect to device: %w", err)
+	}
+	type result struct {
+		svc RsdService
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		svc, err := newRsdServiceFromTcpConn(conn)
+		done <- result{svc: svc, err: err}
+	}()
+	select {
+	case r := <-done:
+		return r.svc, r.err
+	case <-time.After(timeout):
+		_ = conn.Close()
+		return RsdService{}, fmt.Errorf("NewWithAddrPortDevice: setup timeout after %v", timeout)
+	}
+}
+
 func newRsdServiceFromTcpConn(conn *net.TCPConn) (RsdService, error) {
 	h, err := http.NewHttpConnection(conn)
 	if err != nil {
