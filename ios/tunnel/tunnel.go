@@ -135,7 +135,10 @@ func ProbeNetworkDevice(addr string, servicePort int, p PairRecordManager) (stri
 
 // ConnectNetworkTunnel pair-verifies over the network RemotePairing service and
 // brings up a CoreDevice tunnel (TLS-PSK TCP) to the device at addr.
-func ConnectNetworkTunnel(ctx context.Context, addr string, servicePort int, p PairRecordManager) (Tunnel, error) {
+// When userspacePort > 0, forwarding runs through gVisor netstack on localhost
+// instead of a kernel TUN (required on Linux where kernel device->host forwarding
+// is unreliable). Pass 0 for the OS-level TUN path (macOS).
+func ConnectNetworkTunnel(ctx context.Context, addr string, servicePort int, p PairRecordManager, userspacePort int) (Tunnel, error) {
 	ts, err := dialRemotePairingService(addr, servicePort, p)
 	if err != nil {
 		return Tunnel{}, err
@@ -167,10 +170,21 @@ func ConnectNetworkTunnel(ctx context.Context, addr string, servicePort int, p P
 	device := ios.DeviceEntry{
 		Properties: ios.DeviceProperties{SerialNumber: udid},
 	}
-	t, err := connectToTunnelLockdown(ctx, device, tlsConn)
-	if err != nil {
-		_ = tlsConn.Close()
-		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: connect: %w", err)
+	var t Tunnel
+	if userspacePort > 0 {
+		t, err = connectToUserspaceTunnelLockdown(ctx, device, tlsConn, userspacePort)
+		if err != nil {
+			_ = tlsConn.Close()
+			return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: connect (userspace): %w", err)
+		}
+		t.UserspaceTUN = true
+		t.UserspaceTUNPort = userspacePort
+	} else {
+		t, err = connectToTunnelLockdown(ctx, device, tlsConn)
+		if err != nil {
+			_ = tlsConn.Close()
+			return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: connect: %w", err)
+		}
 	}
 	if udid != "" {
 		t.Udid = udid
