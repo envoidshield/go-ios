@@ -359,10 +359,10 @@ func (t *tunnelService) createTcpTunnelListener() (uint16, error) {
 	if err != nil {
 		if raw, jerr := json.Marshal(listenerRes); jerr == nil {
 			log.WithField("response", string(raw)).Error("createTcpTunnelListener: device rejected createListener")
-		} else {
-			log.WithField("response", fmt.Sprintf("%v", listenerRes)).Error("createTcpTunnelListener: device rejected createListener")
+			return 0, fmt.Errorf("createTcpTunnelListener: device rejected createListener: %s", string(raw))
 		}
-		return 0, err
+		log.WithField("response", fmt.Sprintf("%v", listenerRes)).Error("createTcpTunnelListener: device rejected createListener")
+		return 0, fmt.Errorf("createTcpTunnelListener: device rejected createListener: %w", err)
 	}
 	port, ok := createListener["port"].(float64)
 	if !ok {
