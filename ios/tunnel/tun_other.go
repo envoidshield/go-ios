@@ -11,3 +11,5 @@ func wrapLinuxTunCloser(rwc io.ReadWriteCloser, ifName, clientAddr, serverAddr s
 func linuxTunnelAddrAdd(ifName, clientAddr, serverAddr string) error {
 	return nil
 }
+
+func linuxTuneInterface(string) {}

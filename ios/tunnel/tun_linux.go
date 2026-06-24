@@ -61,3 +61,11 @@ func linuxTunnelAddrAdd(ifName, clientAddr, serverAddr string) error {
 	cmd := exec.Command("ip", "-6", "addr", "add", clientAddr+"/64", "dev", ifName)
 	return runCmd(cmd)
 }
+
+func linuxTuneInterface(ifName string) {
+	if ifName == "" {
+		return
+	}
+	_ = runCmd(exec.Command("sysctl", "-q", "-w", "net.ipv6.conf."+ifName+".accept_local=1"))
+	_ = runCmd(exec.Command("sysctl", "-q", "-w", "net.ipv6.conf."+ifName+".accept_ra=0"))
+}

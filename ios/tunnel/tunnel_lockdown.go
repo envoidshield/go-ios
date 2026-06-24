@@ -1,7 +1,6 @@
 package tunnel
 
 import (
-	"bufio"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -104,21 +103,22 @@ func forwardTCPToInterface(ctx context.Context, mtu uint64, deviceConn io.Reader
 	pkt := make([]byte, maxTunnelPacket)
 	header := pkt[:40]
 
-	br := bufio.NewReader(deviceConn)
-
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		default:
-			if _, err := io.ReadFull(br, header); err != nil {
+			if _, err := io.ReadFull(deviceConn, header); err != nil {
 				return fmt.Errorf("failed to read IPv6 header: %w", err)
 			}
 			if header[0]>>4 != 6 {
 				return fmt.Errorf("not an IPv6 packet. expected version 6, but got 0x%02x", header[0])
 			}
 			payloadLength := int(binary.BigEndian.Uint16(header[4:6]))
-			if _, err := io.ReadFull(br, pkt[40:40+payloadLength]); err != nil {
+			if payloadLength < 0 || 40+payloadLength > len(pkt) {
+				return fmt.Errorf("invalid IPv6 payload length %d", payloadLength)
+			}
+			if _, err := io.ReadFull(deviceConn, pkt[40:40+payloadLength]); err != nil {
 				return fmt.Errorf("failed to read payload of length %d: %w", payloadLength, err)
 			}
 			if _, err := tun.Write(pkt[:40+payloadLength]); err != nil {

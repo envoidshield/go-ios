@@ -475,16 +475,16 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, stri
 
 	// Use 'ip' command for Linux, 'ifconfig' for macOS
 	if runtime.GOOS == "linux" {
+		enableIfce := exec.Command("ip", "link", "set", ifce.Name(), "up")
+		if err = runCmd(enableIfce); err != nil {
+			return nil, "", fmt.Errorf("setupTunnelInterface: failed to enable interface %s: %w", ifce.Name(), err)
+		}
+
 		if err = linuxTunnelAddrAdd(ifce.Name(), clientAddr, serverAddr); err != nil {
 			return nil, "", fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
 		}
 		usedPeer = serverAddr != ""
-
-		enableIfce := exec.Command("ip", "link", "set", ifce.Name(), "up")
-		err = runCmd(enableIfce)
-		if err != nil {
-			return nil, "", fmt.Errorf("setupTunnelInterface: failed to enable interface %s: %w", ifce.Name(), err)
-		}
+		linuxTuneInterface(ifce.Name())
 
 		// Match the interface MTU to the device-negotiated tunnel MTU. Without
 		// this the utun keeps water's 1500 default while the device sends larger
@@ -664,21 +664,22 @@ func exchangeCoreTunnelParameters(stream io.ReadWriteCloser) (tunnelParameters, 
 	}
 
 	header := make([]byte, len("CDTunnel")+2)
-	n, err := stream.Read(header)
-	if err != nil {
+	if _, err := io.ReadFull(stream, header); err != nil {
 		return tunnelParameters{}, fmt.Errorf("could not header read from stream. %w", err)
 	}
 
-	bodyLen := header[len(header)-1]
+	bodyLen := int(header[len(header)-1])
+	if bodyLen <= 0 || bodyLen > 4096 {
+		return tunnelParameters{}, fmt.Errorf("invalid CDTunnel body length %d", bodyLen)
+	}
 
 	res := make([]byte, bodyLen)
-	n, err = stream.Read(res)
-	if err != nil {
+	if _, err := io.ReadFull(stream, res); err != nil {
 		return tunnelParameters{}, fmt.Errorf("could not read from stream. %w", err)
 	}
 
 	var parameters tunnelParameters
-	err = json.Unmarshal(res[:n], &parameters)
+	err = json.Unmarshal(res, &parameters)
 	if err != nil {
 		return tunnelParameters{}, err
 	}
