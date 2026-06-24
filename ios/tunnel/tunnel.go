@@ -42,6 +42,10 @@ type Tunnel struct {
 	// Userspace TUN device is used, connect to the local tcp port at Default
 	UserspaceTUN     bool `json:"userspaceTun"`
 	UserspaceTUNPort int  `json:"userspaceTunPort"`
+	// KernelTunIf is the host utun/tun interface name (e.g. tun0). RSD dials bind
+	// to this interface so traffic cannot escape via the default route when multiple
+	// IPv6 interfaces are present.
+	KernelTunIf string `json:"kernelTunIf,omitempty"`
 	closer           func() error
 }
 
@@ -412,7 +416,7 @@ func connectToTunnel(ctx context.Context, info tunnelListener, addr string, devi
 		return Tunnel{}, fmt.Errorf("could not exchange tunnel parameters. %w", err)
 	}
 
-	utunIface, err := setupTunnelInterface(tunnelInfo)
+	utunIface, ifName, err := setupTunnelInterface(tunnelInfo)
 	if err != nil {
 		return Tunnel{}, fmt.Errorf("could not setup tunnel interface. %w", err)
 	}
@@ -443,14 +447,15 @@ func connectToTunnel(ctx context.Context, info tunnelListener, addr string, devi
 	}
 
 	return Tunnel{
-		Address: tunnelInfo.ServerAddress,
-		RsdPort: int(tunnelInfo.ServerRSDPort),
-		Udid:    device.Properties.SerialNumber,
-		closer:  closeFunc,
+		Address:     tunnelInfo.ServerAddress,
+		RsdPort:     int(tunnelInfo.ServerRSDPort),
+		Udid:        device.Properties.SerialNumber,
+		KernelTunIf: ifName,
+		closer:      closeFunc,
 	}, nil
 }
 
-func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, error) {
+func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, string, error) {
 	if runtime.GOOS == "windows" {
 		return setupWindowsTUN(tunnelInfo)
 	}
@@ -458,7 +463,7 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, erro
 		DeviceType: water.TUN,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("setupTunnelInterface: failed creating TUN device %w", err)
+		return nil, "", fmt.Errorf("setupTunnelInterface: failed creating TUN device %w", err)
 	}
 
 	const prefixLength = 64 // TODO: this could be calculated from the netmask provided by the device
@@ -468,13 +473,13 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, erro
 		setIpAddr := exec.Command("ip", "-6", "addr", "add", fmt.Sprintf("%s/%d", tunnelInfo.ClientParameters.Address, prefixLength), "dev", ifce.Name())
 		err = runCmd(setIpAddr)
 		if err != nil {
-			return nil, fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
+			return nil, "", fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
 		}
 
 		enableIfce := exec.Command("ip", "link", "set", ifce.Name(), "up")
 		err = runCmd(enableIfce)
 		if err != nil {
-			return nil, fmt.Errorf("setupTunnelInterface: failed to enable interface %s: %w", ifce.Name(), err)
+			return nil, "", fmt.Errorf("setupTunnelInterface: failed to enable interface %s: %w", ifce.Name(), err)
 		}
 
 		// Match the interface MTU to the device-negotiated tunnel MTU. Without
@@ -487,7 +492,7 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, erro
 		}
 		setMtu := exec.Command("ip", "link", "set", ifce.Name(), "mtu", fmt.Sprintf("%d", mtu))
 		if err = runCmd(setMtu); err != nil {
-			return nil, fmt.Errorf("setupTunnelInterface: failed to configure MTU: %w", err)
+			return nil, "", fmt.Errorf("setupTunnelInterface: failed to configure MTU: %w", err)
 		}
 
 		// Explicit /128 route to the device-side tunnel address. Linux does not
@@ -505,7 +510,7 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, erro
 		setIpAddr := exec.Command("ifconfig", ifce.Name(), "inet6", "add", fmt.Sprintf("%s/%d", tunnelInfo.ClientParameters.Address, prefixLength))
 		err = runCmd(setIpAddr)
 		if err != nil {
-			return nil, fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
+			return nil, "", fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
 		}
 
 		// FIXME: we need to reduce the tunnel interface MTU so that the OS takes care of splitting the payloads into
@@ -516,18 +521,18 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, erro
 			setMtu := exec.Command("ifconfig", ifce.Name(), "mtu", fmt.Sprintf("%d", ifceMtu), "up")
 			err = runCmd(setMtu)
 			if err != nil {
-				return nil, fmt.Errorf("setupTunnelInterface: failed to configure MTU: %w", err)
+				return nil, "", fmt.Errorf("setupTunnelInterface: failed to configure MTU: %w", err)
 			}
 		}
 
 		enableIfce := exec.Command("ifconfig", ifce.Name(), "up")
 		err = runCmd(enableIfce)
 		if err != nil {
-			return nil, fmt.Errorf("setupTunnelInterface: failed to enable interface %s: %w", ifce.Name(), err)
+			return nil, "", fmt.Errorf("setupTunnelInterface: failed to enable interface %s: %w", ifce.Name(), err)
 		}
 	}
 
-	return ifce, nil
+	return ifce, ifce.Name(), nil
 }
 
 func runCmd(cmd *exec.Cmd) error {

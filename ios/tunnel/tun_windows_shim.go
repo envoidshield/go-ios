@@ -4,6 +4,6 @@ package tunnel
 
 import "io"
 
-func setupWindowsTUN(tunnelInfo tunnelParameters) (io.ReadWriteCloser, error) {
+func setupWindowsTUN(tunnelInfo tunnelParameters) (io.ReadWriteCloser, string, error) {
 	panic("this should never be called, it only exists so the build system can compile the code without errors")
 }

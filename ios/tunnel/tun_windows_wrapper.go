@@ -68,27 +68,27 @@ func (t *tunWrapper) Read(p []byte) (int, error) {
 
 }
 
-func setupWindowsTUN(tunnelInfo tunnelParameters) (io.ReadWriteCloser, error) {
+func setupWindowsTUN(tunnelInfo tunnelParameters) (io.ReadWriteCloser, string, error) {
 	name := "tun0"
 
 	tunDevice, err := CreateTUN(name, int(tunnelInfo.ClientParameters.Mtu))
 	if err != nil {
 		fmt.Println("Error creating TUN device:", err)
-		return &tunWrapper{}, err
+		return &tunWrapper{}, "", err
 	}
 	tunname, err := tunDevice.Name()
 
 	if err != nil {
-		return nil, fmt.Errorf("setupTunnelInterface: failed to get interface name: %w", err)
+		return nil, "", fmt.Errorf("setupTunnelInterface: failed to get interface name: %w", err)
 	}
 	const prefixLength = 64
 	setIpAddr := exec.Command("netsh", "interface", "ipv6", "set", "address", tunname, fmt.Sprintf("%s/%d", tunnelInfo.ClientParameters.Address, prefixLength))
 	err = runCmd(setIpAddr)
 	if err != nil {
-		return nil, fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
+		return nil, "", fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
 	}
 	log.Info("windows cmd")
 	log.Info(setIpAddr.String())
 
-	return initTUNwrapper(tunDevice), nil
+	return initTUNwrapper(tunDevice), tunname, nil
 }

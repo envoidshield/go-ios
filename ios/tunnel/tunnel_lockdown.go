@@ -36,7 +36,7 @@ func connectToTunnelLockdown(ctx context.Context, device ios.DeviceEntry, connTo
 		return Tunnel{}, fmt.Errorf("could not exchange tunnel parameters. %w", err)
 	}
 
-	utunIface, err := setupTunnelInterface(tunnelInfo)
+	utunIface, ifName, err := setupTunnelInterface(tunnelInfo)
 	if err != nil {
 		return Tunnel{}, fmt.Errorf("could not setup tunnel interface. %w", err)
 	}
@@ -64,10 +64,11 @@ func connectToTunnelLockdown(ctx context.Context, device ios.DeviceEntry, connTo
 		return errors.Join(utunIface.Close(), connToDevice.Close())
 	}
 	return Tunnel{
-		Address: tunnelInfo.ServerAddress,
-		RsdPort: int(tunnelInfo.ServerRSDPort),
-		Udid:    device.Properties.SerialNumber,
-		closer:  closeFunc,
+		Address:     tunnelInfo.ServerAddress,
+		RsdPort:     int(tunnelInfo.ServerRSDPort),
+		Udid:        device.Properties.SerialNumber,
+		KernelTunIf: ifName,
+		closer:      closeFunc,
 	}, nil
 }
 

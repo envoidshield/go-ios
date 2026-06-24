@@ -61,6 +61,8 @@ type DeviceEntry struct {
 	UserspaceTUN     bool
 	UserspaceTUNHost string
 	UserspaceTUNPort int
+	// KernelTunIf binds RSD tcp6 dials to the utun/tun interface (see connectTUN).
+	KernelTunIf string
 }
 
 // DeviceProperties contains important device related info like the udid which is named SerialNumber
