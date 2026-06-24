@@ -26,7 +26,7 @@ func (t *linuxTun) Close() error {
 			_ = runCmd(exec.Command("ip", "-6", "route", "del", addr+"/128", "dev", ifName))
 		}
 		if addr := strings.TrimSpace(t.clientAddr); addr != "" {
-			_ = runCmd(exec.Command("ip", "-6", "addr", "del", addr+"/128", "dev", ifName))
+			_ = runCmd(exec.Command("ip", "-6", "addr", "del", addr+"/64", "dev", ifName))
 		}
 	}
 	return t.ReadWriteCloser.Close()
@@ -47,11 +47,9 @@ func linuxTunnelAddrAdd(ifName, clientAddr, serverAddr string) error {
 	if clientAddr == "" {
 		return fmt.Errorf("setupTunnelInterface: empty client address")
 	}
-	// ponytail: skip `peer` on Linux. Peer /128 makes the kernel treat the iface as
-	// pointopoint and locally-generated tcp6 to the device ULA bypasses TUN read
-	// (RX ~0, TX high). Host /128 + explicit device /128 route in setupTunnelInterface.
+	// pymobile uses client /64 on Linux; explicit /128 route targets the device ULA.
 	_ = serverAddr
-	cmd := exec.Command("ip", "-6", "addr", "add", clientAddr+"/128", "dev", ifName)
+	cmd := exec.Command("ip", "-6", "addr", "add", clientAddr+"/64", "dev", ifName)
 	return runCmd(cmd)
 }
 

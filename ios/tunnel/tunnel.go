@@ -465,12 +465,6 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, stri
 	if runtime.GOOS == "windows" {
 		return setupWindowsTUN(tunnelInfo)
 	}
-	ifce, err := water.New(water.Config{
-		DeviceType: water.TUN,
-	})
-	if err != nil {
-		return nil, "", fmt.Errorf("setupTunnelInterface: failed creating TUN device %w", err)
-	}
 
 	const prefixLength = 64 // TODO: this could be calculated from the netmask provided by the device
 
@@ -478,72 +472,77 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, stri
 	serverAddr := strings.TrimSpace(tunnelInfo.ServerAddress)
 	usedPeer := false
 
+	var ifce io.ReadWriteCloser
+	var ifName string
+	var err error
+
+	if runtime.GOOS == "linux" {
+		ifce, ifName, err = openLinuxPITun()
+		if err != nil {
+			return nil, "", fmt.Errorf("setupTunnelInterface: failed creating TUN device %w", err)
+		}
+	} else {
+		var wif *water.Interface
+		wif, err = water.New(water.Config{DeviceType: water.TUN})
+		if err != nil {
+			return nil, "", fmt.Errorf("setupTunnelInterface: failed creating TUN device %w", err)
+		}
+		ifce = wif
+		ifName = wif.Name()
+	}
+
 	// Use 'ip' command for Linux, 'ifconfig' for macOS
 	if runtime.GOOS == "linux" {
-		enableIfce := exec.Command("ip", "link", "set", ifce.Name(), "up")
+		enableIfce := exec.Command("ip", "link", "set", ifName, "up")
 		if err = runCmd(enableIfce); err != nil {
-			return nil, "", fmt.Errorf("setupTunnelInterface: failed to enable interface %s: %w", ifce.Name(), err)
+			return nil, "", fmt.Errorf("setupTunnelInterface: failed to enable interface %s: %w", ifName, err)
 		}
 
-		if err = linuxTunnelAddrAdd(ifce.Name(), clientAddr, serverAddr); err != nil {
+		if err = linuxTunnelAddrAdd(ifName, clientAddr, serverAddr); err != nil {
 			return nil, "", fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
 		}
-		usedPeer = false
-		linuxTuneInterface(ifce.Name())
+		linuxTuneInterface(ifName)
 
-		// Match the interface MTU to the device-negotiated tunnel MTU. Without
-		// this the utun keeps water's 1500 default while the device sends larger
-		// CoreDevice frames, stalling device->host forwarding. Clamp to the IPv6
-		// minimum (1280).
 		mtu := tunnelInfo.ClientParameters.Mtu
 		if mtu < 1280 {
 			mtu = 1280
 		}
-		setMtu := exec.Command("ip", "link", "set", ifce.Name(), "mtu", fmt.Sprintf("%d", mtu))
+		setMtu := exec.Command("ip", "link", "set", ifName, "mtu", fmt.Sprintf("%d", mtu))
 		if err = runCmd(setMtu); err != nil {
 			return nil, "", fmt.Errorf("setupTunnelInterface: failed to configure MTU: %w", err)
 		}
 
-		// Peer /128 assigns the host side but Linux still needs an explicit /128
-		// to the device address; route lookup otherwise falls through to the
-		// default (enp86s0) for fd** ULAs.
 		if serverAddr != "" {
-			route := exec.Command("ip", "-6", "route", "replace", serverAddr+"/128", "dev", ifce.Name())
+			route := exec.Command("ip", "-6", "route", "replace", serverAddr+"/128", "dev", ifName)
 			if routeErr := runCmd(route); routeErr != nil {
 				logrus.WithError(routeErr).Warn("setupTunnelInterface: device route add failed")
 			}
 		}
-	} else {
-		// macOS uses ifconfig
-		setIpAddr := exec.Command("ifconfig", ifce.Name(), "inet6", "add", fmt.Sprintf("%s/%d", tunnelInfo.ClientParameters.Address, prefixLength))
-		err = runCmd(setIpAddr)
-		if err != nil {
-			return nil, "", fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
-		}
+		return wrapLinuxTunCloser(ifce, ifName, clientAddr, serverAddr, usedPeer), ifName, nil
+	}
 
-		// FIXME: we need to reduce the tunnel interface MTU so that the OS takes care of splitting the payloads into
-		// smaller packets. If we use a larger number here, the QUIC tunnel won't send the packets properly
-		// This is only necessary on MacOS, on Linux we can't set the MTU to a value less than 1280 (minimum for IPv6)
-		if runtime.GOOS == "darwin" {
-			ifceMtu := 1202
-			setMtu := exec.Command("ifconfig", ifce.Name(), "mtu", fmt.Sprintf("%d", ifceMtu), "up")
-			err = runCmd(setMtu)
-			if err != nil {
-				return nil, "", fmt.Errorf("setupTunnelInterface: failed to configure MTU: %w", err)
-			}
-		}
+	// macOS uses ifconfig
+	setIpAddr := exec.Command("ifconfig", ifName, "inet6", "add", fmt.Sprintf("%s/%d", tunnelInfo.ClientParameters.Address, prefixLength))
+	err = runCmd(setIpAddr)
+	if err != nil {
+		return nil, "", fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
+	}
 
-		enableIfce := exec.Command("ifconfig", ifce.Name(), "up")
-		err = runCmd(enableIfce)
+	if runtime.GOOS == "darwin" {
+		ifceMtu := 1202
+		setMtu := exec.Command("ifconfig", ifName, "mtu", fmt.Sprintf("%d", ifceMtu), "up")
+		err = runCmd(setMtu)
 		if err != nil {
-			return nil, "", fmt.Errorf("setupTunnelInterface: failed to enable interface %s: %w", ifce.Name(), err)
+			return nil, "", fmt.Errorf("setupTunnelInterface: failed to configure MTU: %w", err)
 		}
 	}
 
-	if runtime.GOOS == "linux" {
-		return wrapLinuxTunCloser(ifce, ifce.Name(), clientAddr, serverAddr, usedPeer), ifce.Name(), nil
+	enableIfce := exec.Command("ifconfig", ifName, "up")
+	err = runCmd(enableIfce)
+	if err != nil {
+		return nil, "", fmt.Errorf("setupTunnelInterface: failed to enable interface %s: %w", ifName, err)
 	}
-	return ifce, ifce.Name(), nil
+	return ifce, ifName, nil
 }
 
 func runCmd(cmd *exec.Cmd) error {
