@@ -57,12 +57,12 @@ func (t *linuxPITun) Read(p []byte) (int, error) {
 		return 0, nil
 	}
 	tmp := make([]byte, linuxPIHeaderLen+len(p))
-	n, err := t.f.Read(tmp)
+	n, err := syscall.Read(int(t.f.Fd()), tmp)
 	if err != nil {
 		return 0, err
 	}
 	if n <= linuxPIHeaderLen {
-		return 0, fmt.Errorf("openLinuxPITun: short read %d", n)
+		return 0, fmt.Errorf("linuxPITun: short read %d", n)
 	}
 	return copy(p, tmp[linuxPIHeaderLen:n]), nil
 }
@@ -74,7 +74,7 @@ func (t *linuxPITun) Write(p []byte) (int, error) {
 	buf := make([]byte, linuxPIHeaderLen+len(p))
 	copy(buf, linuxPIHeaderPrefix)
 	copy(buf[linuxPIHeaderLen:], p)
-	if _, err := t.f.Write(buf); err != nil {
+	if _, err := syscall.Write(int(t.f.Fd()), buf); err != nil {
 		return 0, err
 	}
 	return len(p), nil
