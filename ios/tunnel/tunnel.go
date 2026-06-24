@@ -162,6 +162,7 @@ func ConnectNetworkTunnel(ctx context.Context, addr string, servicePort int, p P
 		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: dial tunnel: %w", err)
 	}
 	tcpConn := nc.(*net.TCPConn)
+	_ = tcpConn.SetNoDelay(true)
 	tlsConn, err := tlspsk.Client(tcpConn, ts.sharedSecret)
 	if err != nil {
 		_ = tcpConn.Close()
@@ -468,13 +469,16 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, stri
 
 	const prefixLength = 64 // TODO: this could be calculated from the netmask provided by the device
 
+	clientAddr := strings.TrimSpace(tunnelInfo.ClientParameters.Address)
+	serverAddr := strings.TrimSpace(tunnelInfo.ServerAddress)
+	usedPeer := false
+
 	// Use 'ip' command for Linux, 'ifconfig' for macOS
 	if runtime.GOOS == "linux" {
-		setIpAddr := exec.Command("ip", "-6", "addr", "add", fmt.Sprintf("%s/%d", tunnelInfo.ClientParameters.Address, prefixLength), "dev", ifce.Name())
-		err = runCmd(setIpAddr)
-		if err != nil {
+		if err = linuxTunnelAddrAdd(ifce.Name(), clientAddr, serverAddr); err != nil {
 			return nil, "", fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
 		}
+		usedPeer = serverAddr != ""
 
 		enableIfce := exec.Command("ip", "link", "set", ifce.Name(), "up")
 		err = runCmd(enableIfce)
@@ -495,12 +499,10 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, stri
 			return nil, "", fmt.Errorf("setupTunnelInterface: failed to configure MTU: %w", err)
 		}
 
-		// Explicit /128 route to the device-side tunnel address. Linux does not
-		// always infer reachability for the peer from the host /64 assignment alone
-		// (unlike macOS utun), so RSD dials to ServerAddress can stall with TX-only
-		// forwarding if the kernel never injects inbound packets into the TUN.
-		if addr := strings.TrimSpace(tunnelInfo.ServerAddress); addr != "" {
-			route := exec.Command("ip", "-6", "route", "replace", addr+"/128", "dev", ifce.Name())
+		// Legacy builds used /64 + explicit /128 route. When peer addressing is
+		// unavailable keep that fallback; peer /128 makes the route implicit.
+		if !usedPeer && serverAddr != "" {
+			route := exec.Command("ip", "-6", "route", "replace", serverAddr+"/128", "dev", ifce.Name())
 			if routeErr := runCmd(route); routeErr != nil {
 				logrus.WithError(routeErr).Warn("setupTunnelInterface: device route add failed")
 			}
@@ -532,6 +534,9 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, stri
 		}
 	}
 
+	if runtime.GOOS == "linux" {
+		return wrapLinuxTunCloser(ifce, ifce.Name(), clientAddr, serverAddr, usedPeer), ifce.Name(), nil
+	}
 	return ifce, ifce.Name(), nil
 }
 

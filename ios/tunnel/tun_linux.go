@@ -1,0 +1,63 @@
+//go:build linux
+
+package tunnel
+
+import (
+	"fmt"
+	"io"
+	"os/exec"
+	"strings"
+)
+
+// linuxTun closes the water TUN and deletes the host-side /128 assignment (and
+// any explicit device /128 route left from older builds).
+type linuxTun struct {
+	io.ReadWriteCloser
+	ifName     string
+	clientAddr string
+	serverAddr string
+	usedPeer   bool
+}
+
+func (t *linuxTun) Close() error {
+	ifName := t.ifName
+	if ifName != "" {
+		if addr := strings.TrimSpace(t.serverAddr); addr != "" {
+			_ = runCmd(exec.Command("ip", "-6", "route", "del", addr+"/128", "dev", ifName))
+		}
+		if addr := strings.TrimSpace(t.clientAddr); addr != "" {
+			if t.usedPeer {
+				_ = runCmd(exec.Command("ip", "-6", "addr", "del", addr+"/128", "dev", ifName))
+			} else {
+				_ = runCmd(exec.Command("ip", "-6", "addr", "del", addr+"/64", "dev", ifName))
+			}
+		}
+	}
+	return t.ReadWriteCloser.Close()
+}
+
+func wrapLinuxTunCloser(rwc io.ReadWriteCloser, ifName, clientAddr, serverAddr string, usedPeer bool) io.ReadWriteCloser {
+	return &linuxTun{
+		ReadWriteCloser: rwc,
+		ifName:          ifName,
+		clientAddr:      clientAddr,
+		serverAddr:      serverAddr,
+		usedPeer:        usedPeer,
+	}
+}
+
+func linuxTunnelAddrAdd(ifName, clientAddr, serverAddr string) error {
+	clientAddr = strings.TrimSpace(clientAddr)
+	serverAddr = strings.TrimSpace(serverAddr)
+	if clientAddr == "" {
+		return fmt.Errorf("setupTunnelInterface: empty client address")
+	}
+	if serverAddr != "" {
+		cmd := exec.Command("ip", "-6", "addr", "add",
+			clientAddr+"/128", "dev", ifName,
+			"peer", serverAddr+"/128")
+		return runCmd(cmd)
+	}
+	cmd := exec.Command("ip", "-6", "addr", "add", clientAddr+"/64", "dev", ifName)
+	return runCmd(cmd)
+}
