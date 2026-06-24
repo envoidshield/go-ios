@@ -499,9 +499,10 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, stri
 			return nil, "", fmt.Errorf("setupTunnelInterface: failed to configure MTU: %w", err)
 		}
 
-		// Legacy builds used /64 + explicit /128 route. When peer addressing is
-		// unavailable keep that fallback; peer /128 makes the route implicit.
-		if !usedPeer && serverAddr != "" {
+		// Peer /128 assigns the host side but Linux still needs an explicit /128
+		// to the device address; route lookup otherwise falls through to the
+		// default (enp86s0) for fd** ULAs.
+		if serverAddr != "" {
 			route := exec.Command("ip", "-6", "route", "replace", serverAddr+"/128", "dev", ifce.Name())
 			if routeErr := runCmd(route); routeErr != nil {
 				logrus.WithError(routeErr).Warn("setupTunnelInterface: device route add failed")
