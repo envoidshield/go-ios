@@ -26,11 +26,7 @@ func (t *linuxTun) Close() error {
 			_ = runCmd(exec.Command("ip", "-6", "route", "del", addr+"/128", "dev", ifName))
 		}
 		if addr := strings.TrimSpace(t.clientAddr); addr != "" {
-			if t.usedPeer {
-				_ = runCmd(exec.Command("ip", "-6", "addr", "del", addr+"/128", "dev", ifName))
-			} else {
-				_ = runCmd(exec.Command("ip", "-6", "addr", "del", addr+"/64", "dev", ifName))
-			}
+			_ = runCmd(exec.Command("ip", "-6", "addr", "del", addr+"/128", "dev", ifName))
 		}
 	}
 	return t.ReadWriteCloser.Close()
@@ -48,17 +44,14 @@ func wrapLinuxTunCloser(rwc io.ReadWriteCloser, ifName, clientAddr, serverAddr s
 
 func linuxTunnelAddrAdd(ifName, clientAddr, serverAddr string) error {
 	clientAddr = strings.TrimSpace(clientAddr)
-	serverAddr = strings.TrimSpace(serverAddr)
 	if clientAddr == "" {
 		return fmt.Errorf("setupTunnelInterface: empty client address")
 	}
-	if serverAddr != "" {
-		cmd := exec.Command("ip", "-6", "addr", "add",
-			clientAddr+"/128", "dev", ifName,
-			"peer", serverAddr+"/128")
-		return runCmd(cmd)
-	}
-	cmd := exec.Command("ip", "-6", "addr", "add", clientAddr+"/64", "dev", ifName)
+	// ponytail: skip `peer` on Linux. Peer /128 makes the kernel treat the iface as
+	// pointopoint and locally-generated tcp6 to the device ULA bypasses TUN read
+	// (RX ~0, TX high). Host /128 + explicit device /128 route in setupTunnelInterface.
+	_ = serverAddr
+	cmd := exec.Command("ip", "-6", "addr", "add", clientAddr+"/128", "dev", ifName)
 	return runCmd(cmd)
 }
 

@@ -488,7 +488,7 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, stri
 		if err = linuxTunnelAddrAdd(ifce.Name(), clientAddr, serverAddr); err != nil {
 			return nil, "", fmt.Errorf("setupTunnelInterface: failed to set IP address for interface: %w", err)
 		}
-		usedPeer = serverAddr != ""
+		usedPeer = false
 		linuxTuneInterface(ifce.Name())
 
 		// Match the interface MTU to the device-negotiated tunnel MTU. Without
