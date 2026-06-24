@@ -135,10 +135,7 @@ func ProbeNetworkDevice(addr string, servicePort int, p PairRecordManager) (stri
 
 // ConnectNetworkTunnel pair-verifies over the network RemotePairing service and
 // brings up a CoreDevice tunnel (TLS-PSK TCP) to the device at addr.
-// When userspacePort > 0, forwarding runs through gVisor netstack on localhost
-// instead of a kernel TUN (required on Linux where kernel device->host forwarding
-// is unreliable). Pass 0 for the OS-level TUN path (macOS).
-func ConnectNetworkTunnel(ctx context.Context, addr string, servicePort int, p PairRecordManager, userspacePort int) (Tunnel, error) {
+func ConnectNetworkTunnel(ctx context.Context, addr string, servicePort int, p PairRecordManager) (Tunnel, error) {
 	ts, err := dialRemotePairingService(addr, servicePort, p)
 	if err != nil {
 		return Tunnel{}, err
@@ -170,21 +167,10 @@ func ConnectNetworkTunnel(ctx context.Context, addr string, servicePort int, p P
 	device := ios.DeviceEntry{
 		Properties: ios.DeviceProperties{SerialNumber: udid},
 	}
-	var t Tunnel
-	if userspacePort > 0 {
-		t, err = connectToUserspaceTunnelLockdown(ctx, device, tlsConn, userspacePort)
-		if err != nil {
-			_ = tlsConn.Close()
-			return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: connect (userspace): %w", err)
-		}
-		t.UserspaceTUN = true
-		t.UserspaceTUNPort = userspacePort
-	} else {
-		t, err = connectToTunnelLockdown(ctx, device, tlsConn)
-		if err != nil {
-			_ = tlsConn.Close()
-			return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: connect: %w", err)
-		}
+	t, err := connectToTunnelLockdown(ctx, device, tlsConn)
+	if err != nil {
+		_ = tlsConn.Close()
+		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: connect: %w", err)
 	}
 	if udid != "" {
 		t.Udid = udid
@@ -502,6 +488,17 @@ func setupTunnelInterface(tunnelInfo tunnelParameters) (io.ReadWriteCloser, erro
 		setMtu := exec.Command("ip", "link", "set", ifce.Name(), "mtu", fmt.Sprintf("%d", mtu))
 		if err = runCmd(setMtu); err != nil {
 			return nil, fmt.Errorf("setupTunnelInterface: failed to configure MTU: %w", err)
+		}
+
+		// Explicit /128 route to the device-side tunnel address. Linux does not
+		// always infer reachability for the peer from the host /64 assignment alone
+		// (unlike macOS utun), so RSD dials to ServerAddress can stall with TX-only
+		// forwarding if the kernel never injects inbound packets into the TUN.
+		if addr := strings.TrimSpace(tunnelInfo.ServerAddress); addr != "" {
+			route := exec.Command("ip", "-6", "route", "replace", addr+"/128", "dev", ifce.Name())
+			if routeErr := runCmd(route); routeErr != nil {
+				logrus.WithError(routeErr).Warn("setupTunnelInterface: device route add failed")
+			}
 		}
 	} else {
 		// macOS uses ifconfig
