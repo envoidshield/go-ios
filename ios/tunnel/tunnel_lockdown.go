@@ -87,6 +87,16 @@ func forwardTUNToDevice(ctx context.Context, mtu uint64, tun io.Reader, deviceCo
 				return fmt.Errorf("could not read packet. %w", err)
 			}
 
+			// The CoreDevice tunnel stream is IPv6-only and the device parses it
+			// by reading each IPv6 header's payload length. A non-IPv6 packet
+			// (e.g. leaked IPv4 mDNS/IGMP from the host) has a bogus "payload
+			// length" that makes the device read thousands of stray bytes and
+			// permanently desync the stream, swallowing every subsequent packet
+			// including RSD SYNs. Forward only well-formed IPv6 packets.
+			if n < 40 || packet[0]>>4 != 6 {
+				continue
+			}
+
 			_, err = deviceConn.Write(packet[:n])
 			if err != nil {
 				return fmt.Errorf("could not write packet. %w", err)
