@@ -63,6 +63,8 @@ type DeviceEntry struct {
 	UserspaceTUNPort int
 	// KernelTunIf binds RSD tcp6 dials to the utun/tun interface (see connectTUN).
 	KernelTunIf string
+	// KernelTunLocal is the host-side tunnel IPv6; used as tcp6 LocalAddr on Linux.
+	KernelTunLocal string
 }
 
 // DeviceProperties contains important device related info like the udid which is named SerialNumber

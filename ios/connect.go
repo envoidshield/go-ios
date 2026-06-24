@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/danielpaulus/go-ios/ios/http"
@@ -292,7 +293,7 @@ func initializeXpcConnection(h *http.HttpConnection) error {
 // automatically. Otherwise it will try a operating system level TUN device.
 func ConnectTUNDevice(remoteIp string, port int, d DeviceEntry) (*net.TCPConn, error) {
 	if !d.UserspaceTUN {
-		return connectTUN(remoteIp, port, d.KernelTunIf)
+		return connectTUN(remoteIp, port, d.KernelTunIf, d.KernelTunLocal)
 	}
 
 	addr, _ := net.ResolveTCPAddr("tcp4", fmt.Sprintf("%s:%d", d.UserspaceTUNHost, d.UserspaceTUNPort))
@@ -348,7 +349,7 @@ func ConnectTUNDevice(remoteIp string, port int, d DeviceEntry) (*net.TCPConn, e
 }
 
 // connect to a operating system level TUN device
-func connectTUN(address string, port int, ifName string) (*net.TCPConn, error) {
+func connectTUN(address string, port int, ifName, localAddr string) (*net.TCPConn, error) {
 	addr, err := net.ResolveTCPAddr("tcp6", fmt.Sprintf("[%s]:%d", address, port))
 	if err != nil {
 		return nil, fmt.Errorf("ConnectToHttp2WithAddr: failed to resolve address: %w", err)
@@ -356,6 +357,12 @@ func connectTUN(address string, port int, ifName string) (*net.TCPConn, error) {
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 1 * time.Second}
 	if ctrl := dialBindControl(ifName); ctrl != nil {
 		dialer.Control = ctrl
+	}
+	if localAddr = strings.TrimSpace(localAddr); localAddr != "" {
+		la, laErr := net.ResolveTCPAddr("tcp6", fmt.Sprintf("[%s]:0", localAddr))
+		if laErr == nil {
+			dialer.LocalAddr = la
+		}
 	}
 	nc, err := dialer.Dial("tcp6", addr.String())
 	if err != nil {

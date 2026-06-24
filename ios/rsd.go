@@ -165,7 +165,7 @@ func (r RsdHandshakeResponse) GetServices() map[string]RsdServiceEntry {
 // NewWithAddrPort creates a new RsdService with the given address and port 58783 using a HTTP2 based XPC connection,
 // connecting to an operating system level TUN device.
 func NewWithAddrPort(addr string, port int) (RsdService, error) {
-	conn, err := connectTUN(addr, port, "")
+	conn, err := connectTUN(addr, port, "", "")
 	if err != nil {
 		return RsdService{}, fmt.Errorf("NewWithAddrPort: failed to connect to device: %w", err)
 	}

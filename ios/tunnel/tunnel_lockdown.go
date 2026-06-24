@@ -63,11 +63,12 @@ func connectToTunnelLockdown(ctx context.Context, device ios.DeviceEntry, connTo
 		return errors.Join(utunIface.Close(), connToDevice.Close())
 	}
 	return Tunnel{
-		Address:     tunnelInfo.ServerAddress,
-		RsdPort:     int(tunnelInfo.ServerRSDPort),
-		Udid:        device.Properties.SerialNumber,
-		KernelTunIf: ifName,
-		closer:      closeFunc,
+		Address:       tunnelInfo.ServerAddress,
+		ClientAddress: tunnelInfo.ClientParameters.Address,
+		RsdPort:       int(tunnelInfo.ServerRSDPort),
+		Udid:          device.Properties.SerialNumber,
+		KernelTunIf:   ifName,
+		closer:        closeFunc,
 	}, nil
 }
 

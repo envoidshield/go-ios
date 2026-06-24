@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -46,6 +47,9 @@ type Tunnel struct {
 	// to this interface so traffic cannot escape via the default route when multiple
 	// IPv6 interfaces are present.
 	KernelTunIf string `json:"kernelTunIf,omitempty"`
+	// ClientAddress is the host-side tunnel IPv6 (ClientParameters.Address). Linux
+	// peer-mode TUN dials need this as the local tcp6 source.
+	ClientAddress string `json:"clientAddress,omitempty"`
 	closer           func() error
 }
 
@@ -162,7 +166,7 @@ func ConnectNetworkTunnel(ctx context.Context, addr string, servicePort int, p P
 		return Tunnel{}, fmt.Errorf("ConnectNetworkTunnel: dial tunnel: %w", err)
 	}
 	tcpConn := nc.(*net.TCPConn)
-	_ = tcpConn.SetNoDelay(true)
+	tuneTunnelTCP(tcpConn)
 	tlsConn, err := tlspsk.Client(tcpConn, ts.sharedSecret)
 	if err != nil {
 		_ = tcpConn.Close()
@@ -448,8 +452,9 @@ func connectToTunnel(ctx context.Context, info tunnelListener, addr string, devi
 	}
 
 	return Tunnel{
-		Address:     tunnelInfo.ServerAddress,
-		RsdPort:     int(tunnelInfo.ServerRSDPort),
+		Address:       tunnelInfo.ServerAddress,
+		ClientAddress: tunnelInfo.ClientParameters.Address,
+		RsdPort:       int(tunnelInfo.ServerRSDPort),
 		Udid:        device.Properties.SerialNumber,
 		KernelTunIf: ifName,
 		closer:      closeFunc,
@@ -651,11 +656,13 @@ func exchangeCoreTunnelParameters(stream io.ReadWriteCloser) (tunnelParameters, 
 	if err != nil {
 		return tunnelParameters{}, err
 	}
+	if len(rq) > 0xffff {
+		return tunnelParameters{}, fmt.Errorf("CDTunnel request too large")
+	}
 
 	buf := bytes.NewBuffer(nil)
-	// Write on bytes.Buffer never returns an error
-	_, _ = buf.Write([]byte("CDTunnel\000"))
-	_ = buf.WriteByte(byte(len(rq)))
+	_, _ = buf.Write([]byte("CDTunnel"))
+	_ = binary.Write(buf, binary.BigEndian, uint16(len(rq)))
 	_, _ = buf.Write(rq)
 
 	_, err = stream.Write(buf.Bytes())
@@ -663,12 +670,16 @@ func exchangeCoreTunnelParameters(stream io.ReadWriteCloser) (tunnelParameters, 
 		return tunnelParameters{}, err
 	}
 
-	header := make([]byte, len("CDTunnel")+2)
+	const cdtunnelHeaderLen = 8 + 2
+	header := make([]byte, cdtunnelHeaderLen)
 	if _, err := io.ReadFull(stream, header); err != nil {
 		return tunnelParameters{}, fmt.Errorf("could not header read from stream. %w", err)
 	}
+	if string(header[:8]) != "CDTunnel" {
+		return tunnelParameters{}, fmt.Errorf("invalid CDTunnel magic %q", header[:8])
+	}
 
-	bodyLen := int(header[len(header)-1])
+	bodyLen := int(binary.BigEndian.Uint16(header[8:10]))
 	if bodyLen <= 0 || bodyLen > 4096 {
 		return tunnelParameters{}, fmt.Errorf("invalid CDTunnel body length %d", bodyLen)
 	}
@@ -705,4 +716,10 @@ func exchangeCoreTunnelParametersWithContext(ctx context.Context, stream io.Read
 		return tunnelParameters{}, ctx.Err()
 	}
 	return parameters, err
+}
+
+func tuneTunnelTCP(conn *net.TCPConn) {
+	_ = conn.SetNoDelay(true)
+	_ = conn.SetReadBuffer(1024 * 1024)
+	_ = conn.SetWriteBuffer(256 * 1024)
 }
