@@ -565,13 +565,9 @@ func (t *tunnelService) verifyPair() error {
 	tlvEncrypted := newTlvBuffer()
 	tlvEncrypted.writeByte(typeState, pairStateVerifyRequest)
 	tlvEncrypted.writeData(typeEncryptedData, encrypted)
-	verifyKind := "verifyPairing"
-	if t.jsonWire {
-		verifyKind = "verifyManualPairing"
-	}
 	eventEncrypted := pairingData{
 		data:            tlvEncrypted.bytes(),
-		kind:            verifyKind,
+		kind:            "verifyManualPairing",
 		startNewSession: false,
 	}
 
