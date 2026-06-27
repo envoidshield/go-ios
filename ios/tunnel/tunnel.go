@@ -187,6 +187,57 @@ func ConnectNetworkTunnel(ctx context.Context, addr string, servicePort int, p P
 	return t, nil
 }
 
+// ConnectUSBNCMTunnel brings up a CoreDevice tunnel over USB NCM (RSD at addr).
+// Pairing must already be established (PairAndGetHostKey); the caller should
+// refresh the RSD device entry between pair and connect, matching pymobiledevice3's
+// CoreDeviceTunnelService reconnect. Uses TCP (TunnelProtocol.TCP), not QUIC.
+func ConnectUSBNCMTunnel(ctx context.Context, device ios.DeviceEntry, p PairRecordManager, addr string) (Tunnel, error) {
+	port := device.Rsd.GetPort(untrustedTunnelServiceName)
+	if port == 0 {
+		return Tunnel{}, fmt.Errorf("ConnectUSBNCMTunnel: missing untrusted tunnel port")
+	}
+
+	ts, err := dialTunnelService(addr, port, device, p)
+	if err != nil {
+		return Tunnel{}, fmt.Errorf("ConnectUSBNCMTunnel: dial: %w", err)
+	}
+	defer ts.Close()
+
+	if err := ts.verifyExistingPairing(); err != nil {
+		return Tunnel{}, fmt.Errorf("ConnectUSBNCMTunnel: verify: %w", err)
+	}
+
+	tunnelPort, err := ts.createTcpTunnelListener()
+	if err != nil {
+		return Tunnel{}, fmt.Errorf("ConnectUSBNCMTunnel: listener: %w", err)
+	}
+
+	tcpConn, err := ios.ConnectTUNDevice(addr, int(tunnelPort), device)
+	if err != nil {
+		return Tunnel{}, fmt.Errorf("ConnectUSBNCMTunnel: data dial: %w", err)
+	}
+	tuneTunnelTCP(tcpConn)
+	tlsConn, err := tlspsk.Client(tcpConn, ts.sharedSecret)
+	if err != nil {
+		_ = tcpConn.Close()
+		return Tunnel{}, fmt.Errorf("ConnectUSBNCMTunnel: tls: %w", err)
+	}
+
+	udid := device.Properties.SerialNumber
+	if udid == "" {
+		udid = ts.DeviceUDID()
+	}
+	t, err := connectToTunnelLockdown(ctx, device, tlsConn)
+	if err != nil {
+		_ = tlsConn.Close()
+		return Tunnel{}, fmt.Errorf("ConnectUSBNCMTunnel: tunnel: %w", err)
+	}
+	if udid != "" {
+		t.Udid = udid
+	}
+	return t, nil
+}
+
 func ManualPairAndConnectToTunnel2(ctx context.Context, device ios.DeviceEntry, p PairRecordManager, addr string) (Tunnel, error) {
 	log.Info("ManualPairAndConnectToTunnel: starting manual pairing and tunnel connection.")
 	log.Info("Reminder: stop remoted first with 'sudo pkill -SIGSTOP remoted' and run this with sudo.")
