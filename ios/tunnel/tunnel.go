@@ -50,7 +50,7 @@ type Tunnel struct {
 	// ClientAddress is the host-side tunnel IPv6 (ClientParameters.Address). Linux
 	// peer-mode TUN dials need this as the local tcp6 source.
 	ClientAddress string `json:"clientAddress,omitempty"`
-	closer           func() error
+	closer        func() error
 }
 
 // Close closes the connection to the device and removes the virtual network interface from the host
@@ -86,6 +86,23 @@ func PairAndGetHostKey(addr string, device ios.DeviceEntry, p PairRecordManager)
 	key, err := ts2.setupNewPairingGetHostKey()
 	if err != nil {
 		return "", fmt.Errorf("PairAndGetHostKey: failed to pair device and retrieve host key: %w", err)
+	}
+	return key, nil
+}
+
+// ForcePairAndGetHostKey runs full manual pairing without accepting an existing
+// pair-verify result. Use this after local trust was cleared or rejected and the
+// caller needs iOS to show a fresh Trust prompt for the current host identity.
+func ForcePairAndGetHostKey(addr string, device ios.DeviceEntry, p PairRecordManager) (string, error) {
+	port := device.Rsd.GetPort("com.apple.internal.dt.coredevice.untrusted.tunnelservice")
+	ts, err := dialTunnelService(addr, port, device, p)
+	if err != nil {
+		return "", err
+	}
+	defer ts.Close()
+	key, err := ts.setupNewPairingGetHostKey()
+	if err != nil {
+		return "", fmt.Errorf("ForcePairAndGetHostKey: failed to pair device and retrieve host key: %w", err)
 	}
 	return key, nil
 }
@@ -506,9 +523,9 @@ func connectToTunnel(ctx context.Context, info tunnelListener, addr string, devi
 		Address:       tunnelInfo.ServerAddress,
 		ClientAddress: tunnelInfo.ClientParameters.Address,
 		RsdPort:       int(tunnelInfo.ServerRSDPort),
-		Udid:        device.Properties.SerialNumber,
-		KernelTunIf: ifName,
-		closer:      closeFunc,
+		Udid:          device.Properties.SerialNumber,
+		KernelTunIf:   ifName,
+		closer:        closeFunc,
 	}, nil
 }
 
