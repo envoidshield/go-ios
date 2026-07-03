@@ -28,9 +28,22 @@ var serialToInterface = map[string]string{}
 var deviceLock = sync.Mutex{}
 var deviceCounter = 0
 
+// gate blocks NCM bring-up for newly-attached phones when the embedding system
+// reports 0 available licenses. It is nil (never blocks) until Start initialises
+// it. Only devices that are not yet up are gated; a phone already streaming
+// keeps its interface, so exhausting the license pool never disconnects an
+// already-licensed, monitored device.
+var gate *licenseGate
+
 func Start(c chan os.Signal) error {
 	ctx := gousb.NewContext()
 	defer ctx.Close()
+
+	gateCtx, cancelGate := context.WithCancel(context.Background())
+	defer cancelGate()
+	gate = newLicenseGate()
+	go gate.run(gateCtx)
+
 	for {
 		select {
 		case <-time.After(500 * time.Millisecond):
@@ -112,6 +125,16 @@ func handleDevice(device *gousb.Device) error {
 		return fmt.Errorf("handleDevice: failed to get serial for device %s with err %w", device.String(), err)
 	}
 	serial = strings.Trim(serial, "\x00")
+
+	// License gate: when the embedding system reports 0 available licenses, do
+	// not enable NCM for this phone so it never gets USB networking (and thus
+	// cannot pair / have its trust collected). Re-evaluated on every poll, so
+	// bring-up resumes automatically once a license frees up.
+	if gate != nil && !gate.allow() {
+		slog.Debug("skipping NCM bring-up: pairing blocked by license policy", "serial", serial)
+		return nil
+	}
+
 	updateInterface(serial)
 	_, loaded := allocatedDevices.LoadOrStore(serial, true)
 	if loaded {
