@@ -26,6 +26,12 @@ const (
 	licenseRuntimePolicyPath    = "/api/settings/runtime-policy"
 )
 
+// maxLicensePollIntervalSeconds caps NCM_LICENSE_POLL_INTERVAL_SECONDS so the
+// seconds->Duration multiply in licensePollIntervalFromEnv cannot overflow int64
+// nanoseconds (which would make time.NewTicker panic). 24h is far beyond any sane
+// poll cadence; larger values fall back to the default.
+const maxLicensePollIntervalSeconds = 24 * 60 * 60
+
 // runtimePolicy mirrors the subset of the ironport backend's
 // GET /api/settings/runtime-policy response that decides pairing.
 type runtimePolicy struct {
@@ -161,7 +167,7 @@ func licensePollIntervalFromEnv() time.Duration {
 	if raw == "" {
 		return defaultLicensePollInterval
 	}
-	if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+	if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= maxLicensePollIntervalSeconds {
 		return time.Duration(n) * time.Second
 	}
 	return defaultLicensePollInterval
