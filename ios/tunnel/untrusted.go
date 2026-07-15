@@ -587,6 +587,12 @@ func (t *tunnelService) verifyPair() error {
 		return t.finishVerifySuccess(sharedSecret)
 	}
 
+	// State wasn't the M4 success response - this is a rejection (wrong
+	// pairing record, device paired with a different host identity, etc).
+	// Devices don't always populate the error TLV on rejection, so the
+	// absence of one must NOT be treated as success: this used to fall
+	// through to finishVerifySuccess unconditionally, which reported
+	// "verified" for a device this host never actually paired with.
 	errRes, err := respTLV.readCoalesced(typeError)
 	if err != nil {
 		return err
@@ -594,7 +600,7 @@ func (t *tunnelService) verifyPair() error {
 	if errRes != nil && len(errRes) > 0 {
 		return fmt.Errorf("received error from response: %v", errRes)
 	}
-	return t.finishVerifySuccess(sharedSecret)
+	return fmt.Errorf("verifyPair: device did not confirm pairing (unexpected state, no error TLV)")
 }
 
 func (t *tunnelService) finishVerifySuccess(sharedSecret []byte) error {
