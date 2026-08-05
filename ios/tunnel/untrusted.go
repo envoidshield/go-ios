@@ -590,12 +590,6 @@ func (t *tunnelService) verifyPair() error {
 	}
 
 	respTLV := tlvReader(responseP.data)
-	if state, _ := respTLV.readCoalesced(typeState); len(state) > 0 && state[0] == pairStateVerifyResponse {
-		return t.finishVerifySuccess(sharedSecret)
-	}
-
-	// Devices do not always include an error TLV when pair verification is
-	// rejected. Only the M4 state above confirms that authentication succeeded.
 	errRes, err := respTLV.readCoalesced(typeError)
 	if err != nil {
 		return err
@@ -603,6 +597,10 @@ func (t *tunnelService) verifyPair() error {
 	if errRes != nil && len(errRes) > 0 {
 		return fmt.Errorf("received error from response: %v", errRes)
 	}
+	if state, _ := respTLV.readCoalesced(typeState); len(state) > 0 && state[0] == pairStateVerifyResponse {
+		return t.finishVerifySuccess(sharedSecret)
+	}
+
 	return fmt.Errorf("verifyPair: device did not confirm pairing (unexpected state, no error TLV)")
 }
 
