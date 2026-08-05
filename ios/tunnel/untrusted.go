@@ -12,6 +12,7 @@ import (
 	"fmt"
 
 	"io"
+	"os"
 
 	"github.com/danielpaulus/go-ios/ios/opack"
 	"github.com/danielpaulus/go-ios/ios/xpc"
@@ -341,7 +342,13 @@ func (t *tunnelService) createTcpTunnelListener() (uint16, error) {
 		"request": map[string]interface{}{
 			"_0": map[string]interface{}{
 				"createListener": map[string]interface{}{
-					"key":                   t.sharedSecret,
+					"key": t.sharedSecret,
+					"peerConnectionsInfo": []map[string]interface{}{
+						{
+							"owningPID":         os.Getpid(),
+							"owningProcessName": "CoreDeviceService",
+						},
+					},
 					"transportProtocolType": "tcp",
 				},
 			},
