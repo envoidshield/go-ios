@@ -89,6 +89,9 @@ jobs:
           # Linux AMD64 (native on ubuntu-latest)
           - os: ubuntu-latest
             suffix: linux-amd64
+          # Linux ARM64 (native on ubuntu-24.04-arm; vendored as go-ncm-aarch64)
+          - os: ubuntu-24.04-arm
+            suffix: linux-arm64
           # macOS ARM64 (native on macos-latest which is ARM64)
           - os: macos-latest
             suffix: darwin-arm64
@@ -113,6 +116,14 @@ jobs:
       run: |
         brew install libusb
     
+    - name: Test go-ncm
+      env:
+        CGO_ENABLED: 1
+      run: |
+        echo "Testing go-ncm (${{ matrix.suffix }})..."
+        cd ncm
+        go test ./...
+
     - name: Build go-ncm
       env:
         CGO_ENABLED: 1
